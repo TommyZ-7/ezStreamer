@@ -41,21 +41,40 @@ jobs:
       - name: Install GStreamer MSVC runtime (pinned)
         shell: pwsh
         env:
-          GSTREAMER_VERSION: "1.24.10"
-          GSTREAMER_MSI: "gstreamer-1.0-msvc-x86_64-1.24.10.msi"
-          GSTREAMER_DEV_MSI: "gstreamer-1.0-devel-msvc-x86_64-1.24.10.msi"
+          GSTREAMER_VERSION: "1.28.6"
+          GSTREAMER_EXE: "gstreamer-1.0-msvc-x86_64-1.28.6.exe"
         run: |
-          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.24.10/msvc"
-          Invoke-WebRequest "$base/$env:GSTREAMER_MSI" -OutFile "$env:TEMP/gst.msi"
-          Invoke-WebRequest "$base/$env:GSTREAMER_DEV_MSI" -OutFile "$env:TEMP/gst-dev.msi"
-          Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst.msi", "/quiet", "/norestart" -Wait
-          Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst-dev.msi", "/quiet", "/norestart" -Wait
-          "GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64" >> $env:GITHUB_ENV
-          "C:\gstreamer\1.0\msvc_x86_64\bin" >> $env:GITHUB_PATH
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc"
+          $ua = @{ "User-Agent" = "ezStreamer-CI/1.0" }
+          Invoke-WebRequest "$base/$env:GSTREAMER_EXE" -OutFile "$env:TEMP/gst.exe" -Headers $ua
+          # EXE must be a real PE binary, not an HTML error page
+          $size = (Get-Item "$env:TEMP/gst.exe").Length
+          $magic = [System.BitConverter]::ToString([System.IO.File]::ReadAllBytes("$env:TEMP/gst.exe")[0..1])
+          echo "gst.exe size=$size magic=$magic"
+          if ($size -lt 10MB -or $magic -ne "4D-5A") { throw "bad installer download" }
+          Unblock-File "$env:TEMP/gst.exe"
+          # Inno Setup 6 (1.28+): single installer, /TYPE=devel = runtime+headers
+          $p = Start-Process "$env:TEMP/gst.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=C:\gstreamer\1.0\msvc_x86_64", "/TYPE=devel", "/ALLUSERS" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "GStreamer installer failed: $($p.ExitCode)" }
+          # MSI default dir differs by version; resolve by probing for glib-2.0.pc
+          $gstRoot = $null
+          foreach ($c in @("C:\gstreamer\1.0\msvc_x86_64", "${env:ProgramFiles}\gstreamer\1.0\msvc_x86_64")) {
+            if (Test-Path "$c\lib\pkgconfig\glib-2.0.pc") { $gstRoot = $c; break }
+          }
+          if (-not $gstRoot) {
+            Get-ChildItem "C:\gstreamer", "${env:ProgramFiles}\gstreamer" -Recurse -Filter "glib-2.0.pc" -ErrorAction SilentlyContinue | Select-Object -First 3 FullName
+            throw "glib-2.0.pc not found under known GStreamer roots"
+          }
+          echo "GStreamer root: $gstRoot"
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" >> $env:GITHUB_ENV
+          "$gstRoot\bin" >> $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" >> $env:GITHUB_ENV
+      - name: Install pkg-config (gstreamer-sys build script)
+        run: choco install pkgconfiglite -y --no-progress
       - name: Stage bundled GStreamer subset (design §13.2)
         shell: pwsh
         run: |
-          $gst = "C:\gstreamer\1.0\msvc_x86_64"
+          $gst = if ($env:GSTREAMER_1_0_ROOT_MSVC_X86_64) { $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 } else { "C:\gstreamer\1.0\msvc_x86_64" }
           $dst = "src-tauri/resources/gstreamer"
           Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
           New-Item -ItemType Directory "$dst/bin" -Force | Out-Null
@@ -76,9 +95,9 @@ jobs:
           # LGPL provenance inside the bundle (design §11)
           @"
           Bundled GStreamer runtime provenance (generated at bundle time)
-          GSTREAMER_VERSION=1.24.10
-          Runtime: https://gstreamer.freedesktop.org/data/pkg/windows/1.24.10/msvc/gstreamer-1.0-msvc-x86_64-1.24.10.msi
-          Devel:   https://gstreamer.freedesktop.org/data/pkg/windows/1.24.10/msvc/gstreamer-1.0-devel-msvc-x86_64-1.24.10.msi
+          GSTREAMER_VERSION=1.28.6
+          Runtime: https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe
+          Devel:   https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe
           Sources: https://gitlab.freedesktop.org/gstreamer/gstreamer
           License: LGPL-2.1+ (see GSTREAMER-NOTICE.txt in resources/licenses)
           "@ | Out-File -Encoding utf8 "$dst/GSTREAMER-BUILD.txt"

@@ -9,6 +9,6 @@ pub mod pipeline;
 pub mod probe;
 pub mod supervisor;
 
-pub use pipeline::{build_launch_string, EncoderSpec, StreamPlan};
+pub use pipeline::{build_launch_string, build_plan, EncoderSpec, StreamPlan};
 pub use probe::{pick_best, probe_encoders, probe_with, AUTO_CANDIDATES, MANUAL_ENCODERS};
 pub use supervisor::{retry_backoff_ms, MAX_RETRIES};
