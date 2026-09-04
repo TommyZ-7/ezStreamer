@@ -44,6 +44,9 @@ modules:
   - name: ezstreamer
     buildsystem: simple
     build-options:
+      # rust-stable mounts at /usr/lib/sdk/rust-stable once declared above;
+      # it is not on PATH by default.
+      append-path: /usr/lib/sdk/rust-stable/bin
       env:
         # vendor/ must be populated before flatpak-builder runs (see header).
         CARGO_NET_OFFLINE: "true"
