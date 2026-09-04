@@ -78,6 +78,10 @@ jobs:
           Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst-dev.msi", "/quiet", "/norestart" -Wait
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64" >> $env:GITHUB_ENV
           "C:\gstreamer\1.0\msvc_x86_64\bin" >> $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" >> $env:GITHUB_ENV
+      - name: Install pkg-config (gstreamer-sys build script)
+        if: needs.changes.outputs.docs_only != 'true'
+        run: choco install pkgconfiglite -y --no-progress
       - name: Core tests
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo test -p ezstreamer-core

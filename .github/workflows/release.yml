@@ -52,6 +52,9 @@ jobs:
           Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst-dev.msi", "/quiet", "/norestart" -Wait
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64" >> $env:GITHUB_ENV
           "C:\gstreamer\1.0\msvc_x86_64\bin" >> $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" >> $env:GITHUB_ENV
+      - name: Install pkg-config (gstreamer-sys build script)
+        run: choco install pkgconfiglite -y --no-progress
       - name: Stage bundled GStreamer subset (design §13.2)
         shell: pwsh
         run: |
