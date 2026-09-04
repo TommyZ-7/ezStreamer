@@ -1,0 +1,10 @@
+[package]
+name = "ezstreamer-core"
+version = "0.1.0-preview01"
+edition = "2021"
+description = "ezStreamer pure logic: config, GStreamer pipeline/probe, audio mixer, frame pacer (Windows-only)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

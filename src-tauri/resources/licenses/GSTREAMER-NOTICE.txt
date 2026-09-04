@@ -1,0 +1,8 @@
+Bundled runtime: GStreamer MSVC binaries (https://gstreamer.freedesktop.org/).
+Installed at build time from the official release (see docs/design.md §13.2
+for the pinned version); the installer carries the DLLs the pipeline needs
+(base/good/bad/ugly + D3D11/WASAPI/media-foundation plugins).
+
+GStreamer is licensed under the GNU Lesser General Public License (LGPL v2.1+).
+Source and build scripts: https://gitlab.freedesktop.org/gstreamer.
+ezStreamer itself remains MIT (see LICENSE at the repository root).

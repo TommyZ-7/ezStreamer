@@ -1,0 +1,384 @@
+//! Running GStreamer pipeline (Windows; design.md §4).
+//!
+//! Topology (single `gst::Pipeline`, built with element APIs — the
+//! `gst-launch` string in core is the debuggable reference):
+//!
+//! ```text
+//! video_src(appsrc BGRA) → videoconvert → videoscale → capsfilter
+//!   → queue → <encoder> → h264parse → mux.
+//! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
+//!   audioresample → capsfilter → queue → <aacenc> → aacparse → mux.
+//! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
+//! ```
+//!
+//! Capture stays in Rust (WGC + WASAPI → `VideoSink`/`AudioSink` pumps);
+//! feeder threads move paced frames into the two `appsrc` elements.
+
+use ezstreamer_core::gst::pipeline::EncoderSpec;
+use ezstreamer_core::gst::StreamPlan;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Instant;
+
+pub struct ExitStatus {
+    success: bool,
+}
+
+impl ExitStatus {
+    pub fn success(&self) -> bool {
+        self.success
+    }
+}
+
+pub struct GstStream {
+    pub plan: StreamPlan,
+    pub retry_count: u32,
+    started_at: Instant,
+    video_frames: Arc<AtomicU64>,
+    bytes_pushed: Arc<AtomicU64>,
+    status: Arc<Mutex<ezstreamer_core::ipc_types::StreamStatus>>,
+    done: Arc<Mutex<Option<bool>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl GstStream {
+    pub fn status(&self) -> ezstreamer_core::ipc_types::StreamStatus {
+        let elapsed = self.started_at.elapsed().as_secs().max(1);
+        let frames = self.video_frames.load(Ordering::Relaxed);
+        let bytes = self.bytes_pushed.load(Ordering::Relaxed);
+        let expected = self.plan.fps as u64 * elapsed;
+        ezstreamer_core::ipc_types::StreamStatus {
+            is_live: self.handle.is_some() && self.done.lock().unwrap().is_none(),
+            duration_sec: self.started_at.elapsed().as_secs(),
+            bitrate_kbps: bytes as f64 * 8.0 / 1000.0 / elapsed as f64,
+            dropped_frames: expected.saturating_sub(frames),
+            retrying: self.status.lock().unwrap().retrying,
+        }
+    }
+
+    /// Non-blocking exit check. `Some` = the pipeline thread finished
+    /// (error/EOS/user stop); `None` = still running.
+    pub fn try_wait(&mut self) -> Option<ExitStatus> {
+        let done = *self.done.lock().unwrap()?;
+        Some(ExitStatus { success: done })
+    }
+
+    pub fn take_result(&mut self) -> Option<bool> {
+        self.done.lock().unwrap().take()
+    }
+
+    pub fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+
+    pub fn mark_retrying(&self, n: u32) {
+        self.status.lock().unwrap().retrying = Some(n);
+    }
+}
+
+/// Spawn the pipeline thread. Returns the stream handle once the pipeline
+/// is Playing (or an error naming the missing element — e.g. GStreamer
+/// runtime absent — so the UI can show an actionable message).
+pub fn spawn_pipeline(
+    plan: StreamPlan,
+    video_rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    audio_rx: std::sync::mpsc::Receiver<Vec<f32>>,
+    retry: u32,
+) -> Result<GstStream, String> {
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    use gstreamer_app::AppSrc;
+
+    gst::init().map_err(|e| {
+        format!("GStreamer init failed: {e} (install the MSVC runtime, design §13.2)")
+    })?;
+
+    let started_at = Instant::now();
+    let video_frames = Arc::new(AtomicU64::new(0));
+    let bytes_pushed = Arc::new(AtomicU64::new(0));
+    let done: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+    let stop = Arc::new(AtomicBool::new(false));
+    let status = Arc::new(Mutex::new(
+        ezstreamer_core::ipc_types::StreamStatus::default(),
+    ));
+
+    let pipeline = gst::Pipeline::new();
+    let mk = |factory: &str, name: &str| -> Result<gst::Element, String> {
+        gst::ElementFactory::make(factory)
+            .name(name)
+            .build()
+            .map_err(|_| {
+                format!("GStreamer element missing: {factory} (runtime/plugins incomplete)")
+            })
+    };
+
+    // Elements.
+    let v_src = mk("appsrc", "video_src")?;
+    let v_conv = mk("videoconvert", "vconv")?;
+    let v_scale = mk("videoscale", "vscale")?;
+    let v_caps = mk("capsfilter", "vcaps")?;
+    let v_queue = mk("queue", "vqueue")?;
+    let encoder = find_encoder(&plan.encoder)
+        .ok_or_else(|| format!("no GStreamer element for {}", plan.encoder.id()))?;
+    let v_parse = mk("h264parse", "vparse")?;
+    let a_src = mk("appsrc", "audio_src")?;
+    let a_conv = mk("audioconvert", "aconv")?;
+    let a_res = mk("audioresample", "ares")?;
+    let a_caps = mk("capsfilter", "acaps")?;
+    let a_queue = mk("queue", "aqueue")?;
+    let aacenc = find_aacenc()
+        .ok_or_else(|| "no AAC encoder element (voaacenc/avenc_aac) found".to_string())?;
+    let a_parse = mk("aacparse", "aparse")?;
+    let mux = mk("flvmux", "mux")?;
+    let sink = mk("rtmp2sink", "sink")?;
+
+    // Caps.
+    let vcaps = gst::Caps::builder("video/x-raw")
+        .field("format", "BGRA")
+        .field("width", plan.w as i32)
+        .field("height", plan.h as i32)
+        .field("framerate", gst::Fraction::new(plan.fps as i32, 1))
+        .build();
+    v_caps.set_property("caps", &vcaps);
+    let acaps = gst::Caps::builder("audio/x-raw")
+        .field("format", "F32LE")
+        .field("rate", 48_000i32)
+        .field("channels", 2i32)
+        .build();
+    a_caps.set_property("caps", &acaps);
+
+    // appsrc streaming attributes (live, timestamped).
+    for e in [&v_src, &a_src] {
+        let appsrc = e.clone().dynamic_cast::<AppSrc>().map_err(|_| {
+            "video_src/audio_src is not appsrc (registry provides a different element?)".to_string()
+        })?;
+        appsrc.set_format(gst::Format::Time);
+        appsrc.set_is_live(true);
+        appsrc.set_do_timestamp(true);
+    }
+    v_src.set_property("caps", &vcaps);
+    a_src.set_property("caps", &acaps);
+
+    // Encoder tuning (Topaz-safe low latency, design §4.3).
+    let profile = ezstreamer_core::config::Profile {
+        name: String::new(),
+        w: plan.w,
+        h: plan.h,
+        fps: plan.fps,
+        v_kbps: plan.v_kbps,
+        a_kbps: plan.a_kbps,
+        encoder: "auto".into(),
+        warn: None,
+    };
+    for (k, v) in plan.encoder.gst_props(&profile) {
+        if gstreamer::glib::ObjectExt::has_property(&encoder, k.as_str(), None) {
+            encoder.set_property_from_str(k.as_str(), v.as_str());
+        }
+    }
+    if gstreamer::glib::ObjectExt::has_property(&aacenc, "bitrate", None) {
+        aacenc.set_property("bitrate", &(plan.a_kbps * 1000));
+    }
+    mux.set_property("streamable", &true);
+    sink.set_property("location", &plan.rtmp_url);
+
+    pipeline
+        .add_many(&[
+            &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &a_src, &a_conv,
+            &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux, &sink,
+        ])
+        .map_err(|e| format!("pipeline add failed: {e}"))?;
+    gst::Element::link_many(&[
+        &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &mux,
+    ])
+    .map_err(|e| format!("video link failed: {e:?}"))?;
+    gst::Element::link_many(&[
+        &a_src, &a_conv, &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux,
+    ])
+    .map_err(|e| format!("audio link failed: {e:?}"))?;
+    mux.link(&sink)
+        .map_err(|e| format!("mux link failed: {e:?}"))?;
+
+    // Feeders: paced pump channels → appsrc buffers (nanosecond PTS).
+    let frame_dur_ns = 1_000_000_000u64 / plan.fps.max(1) as u64;
+    let frame_dur = gst::ClockTime::from_nseconds(frame_dur_ns);
+    let vf = video_frames.clone();
+    let bf = bytes_pushed.clone();
+    let stop_v = stop.clone();
+    std::thread::Builder::new()
+        .name("gst-video-feed".into())
+        .spawn(move || {
+            let appsrc = v_src
+                .dynamic_cast::<AppSrc>()
+                .expect("video_src is appsrc");
+            let mut pts_ns = 0u64;
+            while !stop_v.load(Ordering::Relaxed) {
+                match video_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(frame) => {
+                        let n = frame.len() as u64;
+                        let mut buf = gst::Buffer::from_slice(frame);
+                        {
+                            let b = buf.get_mut().unwrap();
+                            b.set_pts(gst::ClockTime::from_nseconds(pts_ns));
+                            b.set_duration(frame_dur);
+                        }
+                        pts_ns += frame_dur_ns;
+                        if appsrc.push_buffer(buf).is_ok() {
+                            vf.fetch_add(1, Ordering::Relaxed);
+                            bf.fetch_add(n, Ordering::Relaxed);
+                        } else {
+                            break; // pipeline flushing
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            let _ = appsrc.end_of_stream();
+        })
+        .map_err(|e| format!("video feeder spawn: {e}"))?;
+
+    let bf2 = bytes_pushed.clone();
+    let stop_a = stop.clone();
+    std::thread::Builder::new()
+        .name("gst-audio-feed".into())
+        .spawn(move || {
+            let appsrc = a_src
+                .dynamic_cast::<AppSrc>()
+                .expect("audio_src is appsrc");
+            while !stop_a.load(Ordering::Relaxed) {
+                match audio_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(block) => {
+                        let n = block.len() as u64 * 4;
+                        let bytes: Vec<u8> =
+                            block.iter().flat_map(|s| s.to_le_bytes()).collect();
+                        if appsrc.push_buffer(gst::Buffer::from_slice(bytes)).is_ok() {
+                            bf2.fetch_add(n, Ordering::Relaxed);
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            let _ = appsrc.end_of_stream();
+        })
+        .map_err(|e| format!("audio feeder spawn: {e}"))?;
+
+    // Bus supervisor: ERROR/EOS ends the run (F-ST-04 retry in commands);
+    // user stop sends EOS and drains.
+    let bus = pipeline.bus().ok_or("pipeline has no bus")?;
+    let done_t = done.clone();
+    let stop_t = stop.clone();
+    let handle = std::thread::Builder::new()
+        .name("gst-bus".into())
+        .spawn(move || {
+            let mut ok = false;
+            let _ = pipeline.set_state(gst::State::Playing);
+            loop {
+                if stop_t.load(Ordering::Relaxed) {
+                    let _ = pipeline.send_event(gst::event::Eos::new());
+                }
+                match bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
+                    None => continue,
+                    Some(msg) => match msg.view() {
+                        gst::MessageView::Eos(..) => {
+                            ok = stop_t.load(Ordering::Relaxed);
+                            break;
+                        }
+                        gst::MessageView::Error(err) => {
+                            eprintln!(
+                                "gst bus ERROR from {:?}: {} ({:?})",
+                                err.src().map(|s| s.path_string()),
+                                err.error(),
+                                err.debug()
+                            );
+                            ok = false;
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+            let _ = pipeline.set_state(gst::State::Null);
+            *done_t.lock().unwrap() = Some(ok);
+        })
+        .map_err(|e| format!("bus thread spawn: {e}"))?;
+
+    // Fail fast: if the pipeline errors during preroll, report quickly
+    // instead of hanging start_stream.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    if let Some(false) = *done.lock().unwrap() {
+        stop.store(true, Ordering::Relaxed);
+        return Err("GStreamer pipeline failed during preroll (see log)".into());
+    }
+
+    Ok(GstStream {
+        plan,
+        retry_count: retry,
+        started_at,
+        video_frames,
+        bytes_pushed,
+        status,
+        done,
+        stop,
+        handle: Some(handle),
+    })
+}
+
+/// First available encoder element for the spec, or None.
+fn find_encoder(spec: &EncoderSpec) -> Option<gstreamer::Element> {
+    for name in spec.gst_elements() {
+        if gstreamer::ElementFactory::find(name).is_some() {
+            if let Ok(e) = gstreamer::ElementFactory::make(name).build() {
+                return Some(e);
+            }
+        }
+    }
+    None
+}
+
+fn find_aacenc() -> Option<gstreamer::Element> {
+    for name in ["voaacenc", "avenc_aac"] {
+        if gstreamer::ElementFactory::find(name).is_some() {
+            if let Ok(e) = gstreamer::ElementFactory::make(name).build() {
+                return Some(e);
+            }
+        }
+    }
+    None
+}
+
+/// True when the registry provides the element factory (for `probe_encoders`).
+pub fn has_element(name: &str) -> bool {
+    gstreamer::ElementFactory::find(name).is_some()
+}
+
+/// Point GStreamer at the runtime bundled beside the app (Release NSIS).
+/// No-op in dev (uses the system MSVC runtime) and when the bundle layout
+/// is absent. Must run before `gst::init()` in the same process.
+pub fn ensure_bundled_runtime(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Ok(res) = app.path().resource_dir() else {
+        return;
+    };
+    let bin = res.join("gstreamer").join("bin");
+    let plugins = res.join("gstreamer").join("lib").join("gstreamer-1.0");
+    if bin.is_dir() {
+        let mut paths = vec![bin];
+        if let Some(p) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&p));
+        }
+        if let Ok(joined) = std::env::join_paths(paths) {
+            std::env::set_var("PATH", joined);
+        }
+    }
+    if plugins.is_dir() {
+        std::env::set_var("GST_PLUGIN_PATH", &plugins);
+    }
+}
