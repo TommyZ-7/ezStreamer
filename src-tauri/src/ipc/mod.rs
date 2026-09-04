@@ -1,3 +1,3 @@
 pub mod commands;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub mod gst_stream;

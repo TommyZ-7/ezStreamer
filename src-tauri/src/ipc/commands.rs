@@ -1,28 +1,29 @@
-//! Tauri IPC commands (design.md §5.1). Windows-only.
+//! Tauri IPC commands (design.md §5.1).
 //!
-//! Capture + GStreamer pipeline live behind `cfg(windows)`; other hosts get
-//! clear stub errors so `cargo test` / `cargo check` / `pnpm build` pass
-//! anywhere. CI builds the real backend on `windows-latest`.
+//! Capture + GStreamer pipeline live behind Windows / Linux cfgs; other
+//! hosts get clear stub errors so `cargo test` / `cargo check` /
+//! `pnpm build` pass anywhere. CI builds the real backend on
+//! `windows-latest` and `ubuntu-latest`.
 
 use arboard::Clipboard;
 #[cfg_attr(not(windows), allow(unused_imports))]
 use ezstreamer_core::config::{self, validate_bitrate, Profile, ProfilesConfig, MAX_AUDIO_KBPS, MAX_VIDEO_KBPS};
-#[cfg_attr(windows, allow(unused_imports))]
+#[cfg_attr(any(windows, target_os = "linux"), allow(unused_imports))]
 use ezstreamer_core::error::Error;
 use ezstreamer_core::gst::StreamPlan;
 use ezstreamer_core::ipc_types::*;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use ezstreamer_core::gst::{self, retry_backoff_ms, MAX_RETRIES};
 use std::sync::{Arc, Mutex};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::time::Duration;
 use tauri::State;
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub struct AppState {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub stream: Mutex<Option<super::gst_stream::GstStream>>,
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub stream: Mutex<Option<()>>,
     /// F-ST-04: everything needed to respawn the pipeline after an abnormal exit
     pub session: Mutex<Option<StreamSession>>,
@@ -32,24 +33,24 @@ pub struct AppState {
     /// live mixer of the running stream (update_audio_mix targets this)
     pub active_mixer: Mutex<Option<Arc<Mutex<ezstreamer_core::audio::Mixer>>>>,
     /// pre-stream preview capture (F-SC-03); stopped by start/stop_stream
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub preview: Mutex<Option<crate::capture::ScreenCapture>>,
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub preview: Mutex<Option<()>>,
     /// Live video leg (always WGC → appsrc; direct-input was FFmpeg-only).
-    #[cfg(windows)]
-    pub screen: Mutex<Option<crate::capture::windows::ScreenHandle>>,
-    #[cfg(not(windows))]
+    #[cfg(any(windows, target_os = "linux"))]
+    pub screen: Mutex<Option<crate::capture::platform::ScreenHandle>>,
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub screen: Mutex<Option<()>>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub audio_cap: Mutex<Option<crate::capture::AudioCapture>>,
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub audio_cap: Mutex<Option<()>>,
 }
 
 /// F-ST-04: the live stream's inputs, kept so a retry can respawn the whole
 /// pipeline (capture + GStreamer) with the same settings.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 #[derive(Clone)]
 pub struct StreamSession {
     pub cfg: StreamConfig,
@@ -88,26 +89,37 @@ pub fn ping() -> String {
 
 #[tauri::command]
 pub fn get_displays() -> CmdResult<Vec<Display>> {
-    #[cfg(windows)]
-    return crate::capture::windows::list_displays().map_err(err);
-    #[cfg(not(windows))]
-    Err(Error::NotImplemented("display enumeration (Windows-only build)")).map_err(err)
+    #[cfg(any(windows, target_os = "linux"))]
+    return crate::capture::platform::list_displays().map_err(err);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    Err(Error::NotImplemented("display enumeration (unsupported platform)")).map_err(err)
 }
 
 #[tauri::command]
 pub fn get_windows() -> CmdResult<Vec<WindowInfo>> {
-    #[cfg(windows)]
-    return crate::capture::windows::list_windows().map_err(err);
-    #[cfg(not(windows))]
-    Err(Error::NotImplemented("window enumeration (Windows-only build)")).map_err(err)
+    #[cfg(any(windows, target_os = "linux"))]
+    return crate::capture::platform::list_windows().map_err(err);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    Err(Error::NotImplemented("window enumeration (unsupported platform)")).map_err(err)
 }
 
 #[tauri::command]
 pub fn get_audio_devices() -> CmdResult<AudioDevices> {
-    #[cfg(windows)]
-    return crate::capture::windows::list_audio_devices().map_err(err);
-    #[cfg(not(windows))]
-    Err(Error::NotImplemented("audio device enumeration (Windows-only build)")).map_err(err)
+    #[cfg(any(windows, target_os = "linux"))]
+    return crate::capture::platform::list_audio_devices().map_err(err);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    Err(Error::NotImplemented("audio device enumeration (unsupported platform)")).map_err(err)
+}
+
+/// Open the OS screen picker (Linux/Wayland: xdg-desktop-portal ScreenCast).
+/// The chosen stream is remembered backend-side; subsequent start_preview /
+/// start_stream calls capture it without re-picking.
+#[tauri::command]
+pub async fn start_portal_picker() -> CmdResult<ScreenTarget> {
+    #[cfg(target_os = "linux")]
+    return crate::capture::platform::portal_picker().await.map_err(err);
+    #[cfg(not(target_os = "linux"))]
+    Err(Error::NotImplemented("portal picker (Linux-only)")).map_err(err)
 }
 
 // ---------- config ----------
@@ -139,7 +151,7 @@ pub fn save_profiles(cfg: ProfilesConfig) -> CmdResult<()> {
 /// `encoders.json` because it ran 1-frame test encodes).
 #[tauri::command]
 pub fn probe_encoders(app: tauri::AppHandle) -> CmdResult<Vec<EncoderInfo>> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         super::gst_stream::ensure_bundled_runtime(&app);
         if ::gstreamer::init().is_err() {
@@ -160,7 +172,7 @@ pub fn probe_encoders(app: tauri::AppHandle) -> CmdResult<Vec<EncoderInfo>> {
         });
         Ok(infos)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = &app;
         Ok(ezstreamer_core::gst::probe_encoders())
@@ -172,7 +184,7 @@ pub fn probe_encoders(app: tauri::AppHandle) -> CmdResult<Vec<EncoderInfo>> {
 /// Build sinks + capture + GStreamer pipeline (design §4). Used by
 /// `start_stream` and the F-ST-04 retry loop; a retry rebuilds everything
 /// because `appsrc` channels are single-consumer.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn launch_pipeline(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -193,7 +205,7 @@ fn launch_pipeline(
     let (asink, audio_rx) =
         AudioSink::spawn_appsrc(sess.mixer.clone()).map_err(err)?;
 
-    let screen = crate::capture::windows::start_screen(
+    let screen = crate::capture::platform::start_screen(
         app.clone(),
         &sess.cfg.screen,
         &sess.profile,
@@ -201,10 +213,14 @@ fn launch_pipeline(
         false,
     )
     .map_err(err)?;
-    *state.screen.lock().unwrap() = Some(crate::capture::windows::ScreenHandle::Wgc(screen));
+    #[cfg(windows)]
+    let handle = crate::capture::platform::ScreenHandle::Wgc(screen);
+    #[cfg(target_os = "linux")]
+    let handle = crate::capture::platform::ScreenHandle::Portal(screen);
+    *state.screen.lock().unwrap() = Some(handle);
 
     let audio_cap =
-        crate::capture::windows::start_audio(&sess.cfg.audio, asink).map_err(|e| {
+        crate::capture::platform::start_audio(&sess.cfg.audio, asink).map_err(|e| {
             stop_capture_backends(state);
             err(e)
         })?;
@@ -217,7 +233,7 @@ fn launch_pipeline(
 }
 
 fn stop_capture_backends(state: &AppState) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         if let Some(mut s) = state.screen.lock().unwrap().take() {
             s.stop();
@@ -226,14 +242,14 @@ fn stop_capture_backends(state: &AppState) {
             a.stop();
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = state;
 }
 
 /// Take the preview slot's mutex guard across stop so concurrent
 /// start_preview/stop_preview commands serialize: stop + replace + store is
 /// atomic, never interleaved.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn take_preview_slot(
     state: &AppState,
 ) -> std::sync::MutexGuard<'_, Option<crate::capture::ScreenCapture>> {
@@ -245,11 +261,11 @@ fn take_preview_slot(
 }
 
 fn stop_preview_impl(state: &AppState) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         let _slot = take_preview_slot(state);
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = state;
 }
 
@@ -271,13 +287,13 @@ pub fn start_stream(
         .cloned()
         .ok_or_else(|| format!("unknown profile: {}", cfg.profile_id))?;
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (&app, &profile, &cfg);
-        return Err(Error::NotImplemented("streaming (Windows-only build)")).map_err(err);
+        return Err(Error::NotImplemented("streaming (unsupported platform)")).map_err(err);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         let usable: Vec<String> = if cfg.encoder_override == "auto" || cfg.encoder_override.is_empty() {
             // Auto resolves against registry-present encoders only.
@@ -351,11 +367,11 @@ pub fn start_stream(
 #[tauri::command]
 pub fn stop_stream(state: State<'_, AppState>) -> CmdResult<()> {
     *state.retrying.lock().unwrap() = None; // cancels a pending F-ST-04 retry
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     if let Some(mut p) = state.stream.lock().unwrap().take() {
         p.stop();
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         *state.stream.lock().unwrap() = None;
     }
@@ -369,12 +385,12 @@ pub fn stop_stream(state: State<'_, AppState>) -> CmdResult<()> {
 #[tauri::command]
 pub fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> StreamStatus {
     let retrying = state.retrying.lock().unwrap().clone();
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (app, retrying);
         return StreamStatus::default();
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         let mut guard = state.stream.lock().unwrap();
         let Some(p) = guard.as_mut() else {
@@ -415,7 +431,7 @@ pub fn get_status(app: tauri::AppHandle, state: State<'_, AppState>) -> StreamSt
 
 /// F-ST-04: respawn the whole pipeline (capture + GStreamer) with
 /// exponential backoff, at most MAX_RETRIES times; 「再接続中 n/3」 via retrying.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn spawn_retry_thread(app: tauri::AppHandle, first_retry: u32) {
     std::thread::Builder::new()
         .name("stream-retry".into())
@@ -461,12 +477,12 @@ pub fn start_preview(
     state: State<'_, AppState>,
     cfg: StreamConfig,
 ) -> CmdResult<()> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (app, state, cfg);
-        return Err(Error::NotImplemented("preview (Windows-only build)")).map_err(err);
+        return Err(Error::NotImplemented("preview (unsupported platform)")).map_err(err);
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         use ezstreamer_core::video::VideoSink;
         if state.stream.lock().unwrap().is_some() {
@@ -489,7 +505,7 @@ pub fn start_preview(
             preview_profile.fps,
         )
         .map_err(err)?;
-        let screen = crate::capture::windows::start_screen(
+        let screen = crate::capture::platform::start_screen(
             app,
             &cfg.screen,
             &preview_profile,
@@ -510,9 +526,9 @@ pub fn stop_preview(state: State<'_, AppState>) -> CmdResult<()> {
 
 #[tauri::command]
 pub fn get_vu(state: State<'_, AppState>) -> VuMeter {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = state;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     if let Some(cap) = state.audio_cap.lock().unwrap().as_ref() {
         if let Some(sink) = &cap.sink {
             return sink.last_vu.lock().unwrap().clone();
@@ -567,10 +583,12 @@ pub fn open_logs_dir() -> CmdResult<()> {
     std::fs::create_dir_all(&dir).map_err(err)?;
     #[cfg(windows)]
     let r = std::process::Command::new("explorer").arg(&dir).spawn();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    let r = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    #[cfg(not(any(windows, target_os = "linux")))]
     let r = Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "log folder opening is Windows-only in this build",
+        "log folder opening is unsupported on this platform in this build",
     ));
     r.map_err(err)?;
     Ok(())

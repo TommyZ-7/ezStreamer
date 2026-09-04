@@ -2,7 +2,7 @@
 name = "ezstreamer"
 version = "0.1.0-preview01"
 edition = "2021"
-description = "Lightweight streamer for TopazChat (Windows-only, GStreamer)"
+description = "Lightweight streamer for TopazChat (GStreamer; Windows + Linux/Flatpak)"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -17,9 +17,10 @@ arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 
-# Windows-only capture + GStreamer. cfg-gated (not features) so
+# Platform capture + GStreamer. cfg-gated (not features) so
 # `cargo test` / `cargo check` / `pnpm build` pass on any host;
-# the full pipeline compiles on Windows / windows-msvc check.
+# the full pipeline compiles on Windows / windows-msvc check and on
+# Linux (Flatpak runtime provides GStreamer + PipeWire).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = [
   "implement",
@@ -48,3 +49,17 @@ windows = { version = "0.52", features = [
 gstreamer = "0.23"
 gstreamer-app = "0.23"
 gstreamer-video = "0.23"
+
+# Linux capture (Portal ScreenCast + PipeWire) + GStreamer from the
+# Flatpak runtime (or system packages on dev machines). Versions track
+# the ezTopaz baseline: pipewire 0.8/libspa 0.8 no longer build on
+# recent toolchains (bindgen emits an opaque spa_pod_builder).
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
+ashpd = { version = "0.7", default-features = false, features = ["tokio"] }
+pipewire = { version = "0.10", features = ["v1_0_0"] }
+libspa = { version = "0.10" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+libc = "0.2"

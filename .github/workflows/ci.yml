@@ -107,3 +107,43 @@ jobs:
       - name: Frontend
         if: needs.changes.outputs.docs_only != 'true'
         run: pnpm i && pnpm build && pnpm test
+
+  # Linux build gate: the Flatpak backend (Portal + PipeWire + GStreamer
+  # from system packages here, from the GNOME runtime in the Flatpak).
+  linux:
+    needs: changes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docs-only fast pass
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "Docs-only change, skipping heavy checks."
+      - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.docs_only != 'true'
+      - uses: pnpm/action-setup@v4
+        if: needs.changes.outputs.docs_only != 'true'
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        if: needs.changes.outputs.docs_only != 'true'
+        with: { node-version: 22, cache: pnpm }
+      - name: Install system dependencies (Tauri + GStreamer + PipeWire)
+        if: needs.changes.outputs.docs_only != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+      - name: Core tests
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo test -p ezstreamer-core
+      - name: Check backend (Linux + GStreamer + PipeWire)
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo check -p ezstreamer --tests
+      - name: Backend tests (PipeWire fail-fast paths; no daemon on runner)
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo test -p ezstreamer
+      - name: Frontend
+        if: needs.changes.outputs.docs_only != 'true'
+        run: pnpm i && pnpm build && pnpm test

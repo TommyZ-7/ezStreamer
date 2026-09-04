@@ -13,6 +13,7 @@
     "tab": "画面",
     "display": "全画面",
     "window": "ウィンドウ",
+    "portalPicker": "Portalピッカーで選択",
     "notAvailable": "キャプチャ機能はこのビルドでは未対応です"
   },
   "audio": {

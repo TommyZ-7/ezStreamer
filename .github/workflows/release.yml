@@ -7,6 +7,7 @@ on:
     paths:
       - 'src-tauri/**'
       - 'ezstreamer-core/**'
+      - 'packaging/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'package.json'
@@ -144,7 +145,54 @@ jobs:
           ---
           $COMPARE
 
-          Windows-only preview build. GStreamer (LGPL) runtime subset is bundled — no separate install needed.
+          Windows preview build (NSIS, GStreamer LGPL subset bundled) + Linux Flatpak (GNOME runtime).
           EOF
           gh release create "$TAG" --title "ezStreamer $TAG" --notes-file /tmp/release-notes.md \
             target/release/bundle/nsis/*.exe
+
+  # Linux Flatpak (GNOME runtime carries GStreamer + PipeWire + WebKitGTK).
+  # PRs build to verify the manifest; tags bundle + attach the .flatpak to
+  # the same GitHub Release (created by the Windows job — upload retries
+  # until it exists).
+  flatpak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - name: Install flatpak toolchain + GNOME SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
+      - name: Build frontend (tauri frontendDist)
+        run: pnpm i && pnpm build
+      - name: Vendor Rust crates (flatpak build sandbox is offline)
+        run: |
+          mkdir -p .cargo
+          cargo vendor >> .cargo/config.toml
+      - name: Build Flatpak
+        run: |
+          sudo flatpak-builder --force-clean --repo=repo build-dir \
+            packaging/flatpak/app.ezstreamer.desktop.yaml
+      - name: Bundle + attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          sudo flatpak build-bundle repo "ezstreamer-${TAG}-x86_64.flatpak" app.ezstreamer.desktop
+          sudo chown "$(id -u):$(id -g)" "ezstreamer-${TAG}-x86_64.flatpak"
+          # The Windows job creates the release; wait for it before uploading.
+          for i in $(seq 1 60); do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
+            sleep 30
+          done
+          gh release upload "$TAG" "ezstreamer-${TAG}-x86_64.flatpak" --clobber
