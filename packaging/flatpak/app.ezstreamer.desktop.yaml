@@ -55,7 +55,8 @@ modules:
         LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
     build-commands:
       - cargo --offline build --release --manifest-path src-tauri/Cargo.toml
-      - install -Dm755 src-tauri/target/release/ezstreamer /app/bin/ezstreamer
+      # NOTE: workspace root owns target/ (not src-tauri/target).
+      - install -Dm755 target/release/ezstreamer /app/bin/ezstreamer
       - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.desktop /app/share/applications/app.ezstreamer.desktop.desktop
       - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.metainfo.xml /app/share/metainfo/app.ezstreamer.desktop.metainfo.xml
       - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/app.ezstreamer.desktop.png
