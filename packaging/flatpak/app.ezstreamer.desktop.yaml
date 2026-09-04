@@ -40,6 +40,8 @@ modules:
   - name: ezstreamer
     buildsystem: simple
     build-options:
+      # rust-stable extension lives off-PATH in the SDK
+      append-path: /usr/lib/sdk/rust-stable/bin
       env:
         # vendor/ must be populated before flatpak-builder runs (see header).
         CARGO_NET_OFFLINE: "true"
