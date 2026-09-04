@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=ezStreamer
+Comment=Lightweight streaming client for TopazChat (VRChat)
+Exec=ezstreamer
+Icon=app.ezstreamer.desktop
+Type=Application
+Categories=AudioVideo;Video;Network;
+Keywords=streaming;rtmp;vrchat;topaz;
+StartupWMClass=ezstreamer

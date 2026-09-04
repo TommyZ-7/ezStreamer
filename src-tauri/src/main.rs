@@ -12,6 +12,7 @@ fn main() {
             ipc::commands::ping,
             ipc::commands::get_displays,
             ipc::commands::get_windows,
+            ipc::commands::start_portal_picker,
             ipc::commands::get_audio_devices,
             ipc::commands::get_profiles,
             ipc::commands::save_profiles,

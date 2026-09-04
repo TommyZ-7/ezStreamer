@@ -1,0 +1,65 @@
+# Flatpak packaging for ezStreamer (Linux).
+#
+# Runtime carries GStreamer + PipeWire + WebKitGTK, so unlike the Windows
+# NSIS build there is no vendored media subset: the app talks to the
+# Portal (ScreenCast) and PipeWire daemon through the sandbox.
+#
+# Build sandbox has NO network: Rust crates must be vendored first
+# (flatpak-builder blocks all build-time downloads).
+#
+# CI (preferred):
+#   cargo vendor             # needs network; writes vendor/ + config below
+#   <paste vendor config into .cargo/config.toml>
+#   pnpm install && pnpm build   # frontend dist/ (tauri frontendDist)
+#   flatpak-builder --force-clean --repo=repo build-dir \
+#     packaging/flatpak/app.ezstreamer.desktop.yaml
+#   flatpak build-bundle repo ezstreamer.flatpak app.ezstreamer.desktop
+#
+# Flathub submission would additionally need flatpak-cargo-generator
+# (cargo-sources.json) instead of the local vendor/ directory.
+
+app-id: app.ezstreamer.desktop
+runtime: org.gnome.Platform
+runtime-version: "50"
+sdk: org.gnome.Sdk
+command: ezstreamer
+# Rust toolchain comes from the freedesktop rust-stable extension
+# (GNOME 50 is built on freedesktop-sdk 25.08).
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang for bindgen (libspa-sys/pipewire-sys build scripts)
+  - org.freedesktop.Sdk.Extension.llvm21
+finish-args:
+  # Wayland + X11 fallback (wry), shared memory buffers
+  - --share=ipc
+  # RTMP ingest
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Mic/system/app audio via PipeWire-Pulse
+  - --socket=pulseaudio
+  # HW encode/decode (VA-API/NVENC) + GL presentation
+  - --device=dri
+  # NOTE: ScreenCast needs no explicit permission — it is mediated by
+  # xdg-desktop-portal at runtime (per-call user consent in the OS picker).
+modules:
+  - name: ezstreamer
+    buildsystem: simple
+    build-options:
+      # rust-stable mounts at /usr/lib/sdk/rust-stable once declared above;
+      # it is not on PATH by default.
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
+      env:
+        # vendor/ must be populated before flatpak-builder runs (see header).
+        CARGO_NET_OFFLINE: "true"
+        LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
+    build-commands:
+      - cargo --offline build --release --manifest-path src-tauri/Cargo.toml
+      # NOTE: workspace root owns target/ (not src-tauri/target).
+      - install -Dm755 target/release/ezstreamer /app/bin/ezstreamer
+      - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.desktop /app/share/applications/app.ezstreamer.desktop.desktop
+      - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.metainfo.xml /app/share/metainfo/app.ezstreamer.desktop.metainfo.xml
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/app.ezstreamer.desktop.png
+    sources:
+      - type: dir
+        path: ../..

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.ezstreamer.desktop</id>
+  <name>ezStreamer</name>
+  <summary>Lightweight streaming client for TopazChat</summary>
+  <description>
+    <p>
+      ezStreamer streams your screen and audio to TopazChat (low-latency
+      distribution for VRChat) over RTMP. Pick a screen via the OS Portal
+      dialog, choose system / per-app / microphone audio, and go live with
+      one button — no OBS scene setup required.
+    </p>
+  </description>
+  <launchable type="desktop-id">app.ezstreamer.desktop.desktop</launchable>
+  <url type="homepage">https://github.com/TommyZ-7/ezStreamer</url>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <provides>
+    <id>app.ezstreamer.desktop.desktop</id>
+  </provides>
+</component>

@@ -13,6 +13,7 @@
     "tab": "Screen",
     "display": "Full screen",
     "window": "Window",
+    "portalPicker": "Pick via Portal dialog",
     "notAvailable": "Screen capture is not available in this build"
   },
   "audio": {

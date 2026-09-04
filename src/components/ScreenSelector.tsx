@@ -1,5 +1,11 @@
 import { useTranslation } from "react-i18next";
 import { useStore } from "../store";
+import { api } from "../lib/api";
+
+// Linux/Flatpak: screens are chosen through the OS Portal dialog
+// (xdg-desktop-portal ScreenCast); there is no app-side enumeration.
+const isLinux =
+  typeof navigator !== "undefined" && /linux/i.test(navigator.platform ?? "");
 
 export function ScreenSelector() {
   const { t } = useTranslation();
@@ -10,9 +16,35 @@ export function ScreenSelector() {
   const backendError = useStore((s) => s.backendError);
   const preview = useStore((s) => s.preview);
 
+  const startPortalPicker = async () => {
+    try {
+      const target = await api.startPortalPicker();
+      useStore.getState().setScreen(target);
+    } catch (e) {
+      // Surface portal failures (e.g. no D-Bus session, user cancelled,
+      // compositor rejected) instead of a dead-looking button.
+      useStore.getState().showToast(String(e));
+    }
+  };
+
   return (
     <section className="space-y-2">
       <h2 className="text-sm font-semibold text-zinc-400">{t("screen.tab")}</h2>
+      {isLinux && (
+        <div className="text-sm">
+          <button
+            className="rounded border border-zinc-600 px-3 py-1 hover:border-zinc-400"
+            onClick={() => void startPortalPicker()}
+          >
+            {t("screen.portalPicker")}
+          </button>
+          {screen.id.startsWith("portal:") && (
+            <p className="mt-1 text-xs text-zinc-500">
+              {screen.type === "display" ? t("screen.display") : t("screen.window")}: {screen.id}
+            </p>
+          )}
+        </div>
+      )}
       <div className="flex gap-4 text-sm">
         <label className="flex items-center gap-1">
           <input
