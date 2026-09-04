@@ -27,6 +27,8 @@ command: ezstreamer
 # (GNOME 50 is built on freedesktop-sdk 25.08).
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang for bindgen (libspa-sys/pipewire-sys build scripts)
+  - org.freedesktop.Sdk.Extension.llvm21
 finish-args:
   # Wayland + X11 fallback (wry), shared memory buffers
   - --share=ipc
@@ -46,10 +48,11 @@ modules:
     build-options:
       # rust-stable mounts at /usr/lib/sdk/rust-stable once declared above;
       # it is not on PATH by default.
-      append-path: /usr/lib/sdk/rust-stable/bin
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
       env:
         # vendor/ must be populated before flatpak-builder runs (see header).
         CARGO_NET_OFFLINE: "true"
+        LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
     build-commands:
       - cargo --offline build --release --manifest-path src-tauri/Cargo.toml
       - install -Dm755 src-tauri/target/release/ezstreamer /app/bin/ezstreamer
