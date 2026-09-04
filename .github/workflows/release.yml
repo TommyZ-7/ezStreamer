@@ -46,8 +46,19 @@ jobs:
           GSTREAMER_DEV_MSI: "gstreamer-1.0-devel-msvc-x86_64-1.26.11.msi"
         run: |
           $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc"
-          Invoke-WebRequest "$base/$env:GSTREAMER_MSI" -OutFile "$env:TEMP/gst.msi"
-          Invoke-WebRequest "$base/$env:GSTREAMER_DEV_MSI" -OutFile "$env:TEMP/gst-dev.msi"
+          $ua = @{ "User-Agent" = "ezStreamer-CI/1.0" }
+          Invoke-WebRequest "$base/$env:GSTREAMER_MSI" -OutFile "$env:TEMP/gst.msi" -Headers $ua
+          Invoke-WebRequest "$base/$env:GSTREAMER_DEV_MSI" -OutFile "$env:TEMP/gst-dev.msi" -Headers $ua
+          # 1619 guard: MSI must be a real OLE package, not an HTML error page
+          foreach ($f in @("$env:TEMP/gst.msi", "$env:TEMP/gst-dev.msi")) {
+            $size = (Get-Item $f).Length
+            $magic = [System.BitConverter]::ToString([System.IO.File]::ReadAllBytes($f)[0..3])
+            echo "$f size=$size magic=$magic"
+            if ($size -lt 10MB -or $magic -ne "D0-CF-11-E0") {
+              Get-Content $f -TotalCount 5 -ErrorAction SilentlyContinue
+              throw "bad MSI download: $f"
+            }
+          }
           $rt = Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst.msi", "/quiet", "/norestart" -Wait -PassThru
           $dev = Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst-dev.msi", "/quiet", "/norestart" -Wait -PassThru
           if ($rt.ExitCode -ne 0 -or $dev.ExitCode -ne 0) { throw "msiexec failed: runtime=$($rt.ExitCode) devel=$($dev.ExitCode)" }
