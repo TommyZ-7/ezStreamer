@@ -112,7 +112,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           git fetch --tags --force
           # 1つ前の preview.* タグを特定し、差分をリリース文にする
-          PREV=$(git tag --list 'preview.*' --sort=-v:refname | grep -vxF "$TAG" | head -n1)
+          PREV=$(git tag --list 'preview.*' --sort=-v:refname | grep -vxF "$TAG" | head -n1 || true)
           if [ -n "$PREV" ]; then
             RANGE="$PREV..$TAG"
             TITLE_SUFFIX=" ($PREV からの変更)"
