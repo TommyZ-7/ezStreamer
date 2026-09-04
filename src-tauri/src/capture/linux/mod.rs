@@ -8,6 +8,10 @@ mod audio;
 mod enumerate;
 mod screen;
 
+// Re-exported so submodules keep the single-file `super::{...}` paths
+// (ezTopaz had one `capture/linux.rs`; the split must not churn call sites).
+pub(super) use super::{CaptureError, Result};
+
 pub use audio::{start_audio, AudioCapture};
 pub use enumerate::{list_audio_devices, list_displays, list_windows};
 pub use screen::{portal_picker, start_screen, ScreenCapture};
