@@ -171,7 +171,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
+          sudo flatpak install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
       - name: Build frontend (tauri frontendDist)
         run: pnpm i && pnpm build
       - name: Vendor Rust crates (flatpak build sandbox is offline)

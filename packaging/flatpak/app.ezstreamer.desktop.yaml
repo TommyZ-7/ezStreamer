@@ -23,6 +23,10 @@ runtime: org.gnome.Platform
 runtime-version: "50"
 sdk: org.gnome.Sdk
 command: ezstreamer
+# Rust toolchain comes from the freedesktop rust-stable extension
+# (GNOME 50 is built on freedesktop-sdk 25.08).
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
 finish-args:
   # Wayland + X11 fallback (wry), shared memory buffers
   - --share=ipc
@@ -40,8 +44,6 @@ modules:
   - name: ezstreamer
     buildsystem: simple
     build-options:
-      # rust-stable extension lives off-PATH in the SDK
-      append-path: /usr/lib/sdk/rust-stable/bin
       env:
         # vendor/ must be populated before flatpak-builder runs (see header).
         CARGO_NET_OFFLINE: "true"
