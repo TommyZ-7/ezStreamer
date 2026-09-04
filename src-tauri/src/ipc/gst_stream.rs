@@ -61,8 +61,8 @@ impl GstStream {
     /// Non-blocking exit check. `Some` = the pipeline thread finished
     /// (error/EOS/user stop); `None` = still running.
     pub fn try_wait(&mut self) -> Option<ExitStatus> {
-        let done = *self.done.lock().unwrap()?;
-        Some(ExitStatus { success: done })
+        let done: Option<bool> = *self.done.lock().unwrap();
+        done.map(|d| ExitStatus { success: d })
     }
 
     pub fn take_result(&mut self) -> Option<bool> {
@@ -176,11 +176,11 @@ pub fn spawn_pipeline(
         warn: None,
     };
     for (k, v) in plan.encoder.gst_props(&profile) {
-        if gstreamer::glib::ObjectExt::has_property(&encoder, k.as_str(), None) {
+        if encoder.has_property(k.as_str(), None) {
             encoder.set_property_from_str(k.as_str(), v.as_str());
         }
     }
-    if gstreamer::glib::ObjectExt::has_property(&aacenc, "bitrate", None) {
+    if aacenc.has_property("bitrate", None) {
         aacenc.set_property("bitrate", &(plan.a_kbps * 1000));
     }
     mux.set_property("streamable", &true);

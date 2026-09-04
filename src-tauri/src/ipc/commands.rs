@@ -281,7 +281,7 @@ pub fn start_stream(
     {
         let usable: Vec<String> = if cfg.encoder_override == "auto" || cfg.encoder_override.is_empty() {
             // Auto resolves against registry-present encoders only.
-            probe_encoders()
+            probe_encoders(app.clone())
                 .map(|infos| infos.into_iter().filter(|i| i.usable).map(|i| i.name).collect())
                 .unwrap_or_default() // probe failed: resolve falls back to libx264
         } else {
