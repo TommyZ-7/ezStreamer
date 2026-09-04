@@ -85,6 +85,9 @@ jobs:
               throw "bad MSI download: $f"
             }
           }
+          # Downloaded files carry Zone.Identifier (Mark of the Web);
+          # msiexec refuses them with 1619 unless unblocked.
+          Unblock-File "$env:TEMP/gst.msi", "$env:TEMP/gst-dev.msi"
           $rt = Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst.msi", "/quiet", "/norestart" -Wait -PassThru
           $dev = Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst-dev.msi", "/quiet", "/norestart" -Wait -PassThru
           if ($rt.ExitCode -ne 0 -or $dev.ExitCode -ne 0) { throw "msiexec failed: runtime=$($rt.ExitCode) devel=$($dev.ExitCode)" }
