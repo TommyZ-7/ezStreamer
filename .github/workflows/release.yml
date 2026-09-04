@@ -41,30 +41,21 @@ jobs:
       - name: Install GStreamer MSVC runtime (pinned)
         shell: pwsh
         env:
-          GSTREAMER_VERSION: "1.26.11"
-          GSTREAMER_MSI: "gstreamer-1.0-msvc-x86_64-1.26.11.msi"
-          GSTREAMER_DEV_MSI: "gstreamer-1.0-devel-msvc-x86_64-1.26.11.msi"
+          GSTREAMER_VERSION: "1.28.6"
+          GSTREAMER_EXE: "gstreamer-1.0-msvc-x86_64-1.28.6.exe"
         run: |
-          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc"
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc"
           $ua = @{ "User-Agent" = "ezStreamer-CI/1.0" }
-          Invoke-WebRequest "$base/$env:GSTREAMER_MSI" -OutFile "$env:TEMP/gst.msi" -Headers $ua
-          Invoke-WebRequest "$base/$env:GSTREAMER_DEV_MSI" -OutFile "$env:TEMP/gst-dev.msi" -Headers $ua
-          # 1619 guard: MSI must be a real OLE package, not an HTML error page
-          foreach ($f in @("$env:TEMP/gst.msi", "$env:TEMP/gst-dev.msi")) {
-            $size = (Get-Item $f).Length
-            $magic = [System.BitConverter]::ToString([System.IO.File]::ReadAllBytes($f)[0..3])
-            echo "$f size=$size magic=$magic"
-            if ($size -lt 10MB -or $magic -ne "D0-CF-11-E0") {
-              Get-Content $f -TotalCount 5 -ErrorAction SilentlyContinue
-              throw "bad MSI download: $f"
-            }
-          }
-          # Downloaded files carry Zone.Identifier (Mark of the Web);
-          # msiexec refuses them with 1619 unless unblocked.
-          Unblock-File "$env:TEMP/gst.msi", "$env:TEMP/gst-dev.msi"
-          $rt = Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst.msi", "/quiet", "/norestart" -Wait -PassThru
-          $dev = Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst-dev.msi", "/quiet", "/norestart" -Wait -PassThru
-          if ($rt.ExitCode -ne 0 -or $dev.ExitCode -ne 0) { throw "msiexec failed: runtime=$($rt.ExitCode) devel=$($dev.ExitCode)" }
+          Invoke-WebRequest "$base/$env:GSTREAMER_EXE" -OutFile "$env:TEMP/gst.exe" -Headers $ua
+          # EXE must be a real PE binary, not an HTML error page
+          $size = (Get-Item "$env:TEMP/gst.exe").Length
+          $magic = [System.BitConverter]::ToString([System.IO.File]::ReadAllBytes("$env:TEMP/gst.exe")[0..1])
+          echo "gst.exe size=$size magic=$magic"
+          if ($size -lt 10MB -or $magic -ne "4D-5A") { throw "bad installer download" }
+          Unblock-File "$env:TEMP/gst.exe"
+          # Inno Setup 6 (1.28+): single installer, /TYPE=devel = runtime+headers
+          $p = Start-Process "$env:TEMP/gst.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=C:\gstreamer\1.0\msvc_x86_64", "/TYPE=devel", "/ALLUSERS" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "GStreamer installer failed: $($p.ExitCode)" }
           # MSI default dir differs by version; resolve by probing for glib-2.0.pc
           $gstRoot = $null
           foreach ($c in @("C:\gstreamer\1.0\msvc_x86_64", "${env:ProgramFiles}\gstreamer\1.0\msvc_x86_64")) {
@@ -104,9 +95,9 @@ jobs:
           # LGPL provenance inside the bundle (design §11)
           @"
           Bundled GStreamer runtime provenance (generated at bundle time)
-          GSTREAMER_VERSION=1.26.11
-          Runtime: https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc/gstreamer-1.0-msvc-x86_64-1.26.11.msi
-          Devel:   https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc/gstreamer-1.0-devel-msvc-x86_64-1.26.11.msi
+          GSTREAMER_VERSION=1.28.6
+          Runtime: https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe
+          Devel:   https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe
           Sources: https://gitlab.freedesktop.org/gstreamer/gstreamer
           License: LGPL-2.1+ (see GSTREAMER-NOTICE.txt in resources/licenses)
           "@ | Out-File -Encoding utf8 "$dst/GSTREAMER-BUILD.txt"
