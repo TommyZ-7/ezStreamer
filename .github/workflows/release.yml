@@ -41,11 +41,11 @@ jobs:
       - name: Install GStreamer MSVC runtime (pinned)
         shell: pwsh
         env:
-          GSTREAMER_VERSION: "1.24.10"
-          GSTREAMER_MSI: "gstreamer-1.0-msvc-x86_64-1.24.10.msi"
-          GSTREAMER_DEV_MSI: "gstreamer-1.0-devel-msvc-x86_64-1.24.10.msi"
+          GSTREAMER_VERSION: "1.26.11"
+          GSTREAMER_MSI: "gstreamer-1.0-msvc-x86_64-1.26.11.msi"
+          GSTREAMER_DEV_MSI: "gstreamer-1.0-devel-msvc-x86_64-1.26.11.msi"
         run: |
-          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.24.10/msvc"
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc"
           Invoke-WebRequest "$base/$env:GSTREAMER_MSI" -OutFile "$env:TEMP/gst.msi"
           Invoke-WebRequest "$base/$env:GSTREAMER_DEV_MSI" -OutFile "$env:TEMP/gst-dev.msi"
           Start-Process msiexec -ArgumentList "/i", "$env:TEMP/gst.msi", "/quiet", "/norestart" -Wait
@@ -76,9 +76,9 @@ jobs:
           # LGPL provenance inside the bundle (design §11)
           @"
           Bundled GStreamer runtime provenance (generated at bundle time)
-          GSTREAMER_VERSION=1.24.10
-          Runtime: https://gstreamer.freedesktop.org/data/pkg/windows/1.24.10/msvc/gstreamer-1.0-msvc-x86_64-1.24.10.msi
-          Devel:   https://gstreamer.freedesktop.org/data/pkg/windows/1.24.10/msvc/gstreamer-1.0-devel-msvc-x86_64-1.24.10.msi
+          GSTREAMER_VERSION=1.26.11
+          Runtime: https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc/gstreamer-1.0-msvc-x86_64-1.26.11.msi
+          Devel:   https://gstreamer.freedesktop.org/data/pkg/windows/1.26.11/msvc/gstreamer-1.0-devel-msvc-x86_64-1.26.11.msi
           Sources: https://gitlab.freedesktop.org/gstreamer/gstreamer
           License: LGPL-2.1+ (see GSTREAMER-NOTICE.txt in resources/licenses)
           "@ | Out-File -Encoding utf8 "$dst/GSTREAMER-BUILD.txt"
