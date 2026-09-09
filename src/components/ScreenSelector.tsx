@@ -107,7 +107,10 @@ export function ScreenSelector() {
       )}
 
       {backendError && (
-        <p className="text-xs text-amber-500">{t("screen.notAvailable")}</p>
+        <div className="space-y-1">
+          <p className="text-xs text-amber-500">{t("screen.notAvailable")}</p>
+          <p className="text-xs text-zinc-500 break-all">{backendError}</p>
+        </div>
       )}
 
       {/* F-SC-03 preview */}

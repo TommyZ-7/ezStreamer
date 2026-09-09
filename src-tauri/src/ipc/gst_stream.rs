@@ -131,8 +131,10 @@ pub fn spawn_pipeline(
     let a_res = mk("audioresample", "ares")?;
     let a_caps = mk("capsfilter", "acaps")?;
     let a_queue = mk("queue", "aqueue")?;
-    let aacenc = find_aacenc()
-        .ok_or_else(|| "no AAC encoder element (voaacenc/avenc_aac) found".to_string())?;
+    let aacenc = find_aacenc().ok_or_else(|| {
+        "no AAC encoder element (voaacenc/avenc_aac/faac/fdkaacenc) found (runtime/plugins incomplete)"
+            .to_string()
+    })?;
     let a_parse = mk("aacparse", "aparse")?;
     let mux = mk("flvmux", "mux")?;
     let sink = mk("rtmp2sink", "sink")?;
@@ -344,7 +346,9 @@ fn find_encoder(spec: &EncoderSpec) -> Option<gstreamer::Element> {
 }
 
 fn find_aacenc() -> Option<gstreamer::Element> {
-    for name in ["voaacenc", "avenc_aac"] {
+    // MSVC runtime contents vary by version (voaacenc vs libav vs faac/fdk);
+    // try all known AAC encoder factories, first available wins.
+    for name in ["voaacenc", "avenc_aac", "faac", "fdkaacenc"] {
         if gstreamer::ElementFactory::find(name).is_some() {
             if let Ok(e) = gstreamer::ElementFactory::make(name).build() {
                 return Some(e);

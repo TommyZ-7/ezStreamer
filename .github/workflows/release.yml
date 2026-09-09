@@ -86,13 +86,30 @@ jobs:
           # AddDllDirectory. A hand-picked subset (preview.01) missed
           # gio/gthread/orc and broke clean machines at process startup.
           Copy-Item "$gst/bin/*.dll" "$dst/bin/"
-          # Plugin allowlist: colorspace/scale, audio convert, mux/sink, encoders
+          # Plugin allowlist: colorspace/scale, audio convert, mux/sink, encoders,
+          # plus parsers + AAC (preview.02 shipped without h264parse/aacparse/
+          # AAC enc so start_stream failed on clean machines while preview and
+          # encoder probe worked — the probe never checks these elements).
+          # Mapping (docs): h264parse→videoparsersbad, aacparse→audioparsers,
+          # voaacenc→voaacenc, avenc_aac→libav.
           $plugins = @("gstapp","gstvideoconvertscale","gstvideofilter","gstaudioconvert","gstaudioresample",
-            "gstflv","gstrtmp2","gstx264","gstopenh264","gstnvcodec","gstqsv","gstamfcodec","gstd3d11","gstwasapi2")
+            "gstflv","gstrtmp2","gstx264","gstopenh264","gstnvcodec","gstqsv","gstamfcodec","gstd3d11","gstwasapi2",
+            "gstvideoparsersbad","gstaudioparsers","gstvoaacenc","gstlibav","gstfaac","gstfdkaac")
+          $missingPlugins = @()
           foreach ($p in $plugins) {
             $f = Get-Item "$gst/lib/gstreamer-1.0/$p.dll" -ErrorAction SilentlyContinue
             if ($f) { Copy-Item $f "$dst/lib/gstreamer-1.0/" }
-            else { Write-Host "NOTE: plugin not in runtime: $p" }
+            else { $missingPlugins += $p; Write-Host "NOTE: plugin not in runtime: $p" }
+          }
+          # Fail fast on required pipeline plugins; HW encoders may legitimately
+          # vary, but parsers/AAC/mux/sink must ship or start_stream always fails.
+          $requiredPlugins = @("gstapp","gstvideoconvertscale","gstaudioconvert","gstaudioresample",
+            "gstflv","gstrtmp2","gstx264","gstvideoparsersbad","gstaudioparsers")
+          foreach ($r in $requiredPlugins) {
+            if ($missingPlugins -contains $r) { throw "bundled runtime missing required plugin: $r" }
+          }
+          if ((($missingPlugins -contains "gstvoaacenc") -and ($missingPlugins -contains "gstlibav") -and ($missingPlugins -contains "gstfaac") -and ($missingPlugins -contains "gstfdkaac"))) {
+            throw "bundled runtime missing AAC encoder plugin: need gstvoaacenc (voaacenc), gstlibav (avenc_aac), gstfaac (faac) or gstfdkaac (fdkaacenc)"
           }
           # Plugin scanner + preset/schemas helpers when present (registry update).
           foreach ($extra in @(
@@ -118,6 +135,38 @@ jobs:
           }
           Get-ChildItem "$dst/bin/*.dll" | Measure-Object | ForEach-Object { echo "bundled bin DLLs: $($_.Count)" }
           Get-ChildItem "$dst/lib/gstreamer-1.0/*.dll" | Measure-Object | ForEach-Object { echo "bundled plugins: $($_.Count)" }
+          # Verify the staged subset actually provides the pipeline elements
+          # (gst_stream.rs spawn_pipeline). Inspect with the staged plugin path
+          # first so a missing staged plugin fails here, not on clean machines.
+          $inspect = "$gst/bin/gst-inspect-1.0.exe"
+          if (Test-Path $inspect) {
+            Write-Host "Available AAC encoders in FULL runtime:"
+            & $inspect 2>$null | Select-String -Pattern "voaacenc|avenc_aac|faac|fdkaacenc" | Select-Object -First 10 | ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+            # Isolate the staged subset: override the system plugin path so
+            # gst-inspect sees ONLY staged plugins (otherwise the full system
+            # runtime masks a missing staged file and the check is useless).
+            $stagedPlugins = (Resolve-Path "$dst/lib/gstreamer-1.0").Path
+            $stagedBin = (Resolve-Path "$dst/bin").Path
+            $env:GST_PLUGIN_PATH = $stagedPlugins
+            $env:GST_PLUGIN_SYSTEM_PATH = $stagedPlugins
+            $env:GST_REGISTRY = Join-Path $env:TEMP ("gst-registry-staged-" + $PID + ".bin")
+            Remove-Item $env:GST_REGISTRY -ErrorAction SilentlyContinue
+            $env:PATH = $stagedBin + ";" + $env:PATH
+            $requiredElements = @("appsrc","videoconvert","videoscale","x264enc","h264parse",
+              "audioconvert","audioresample","aacparse","flvmux","rtmp2sink")
+            foreach ($e in $requiredElements) {
+              & $inspect $e 2>$null | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "staged runtime missing element: $e (plugin allowlist incomplete)" }
+            }
+            & $inspect "voaacenc" 2>$null | Out-Null; $hasVoa = ($LASTEXITCODE -eq 0)
+            & $inspect "avenc_aac" 2>$null | Out-Null; $hasAv = ($LASTEXITCODE -eq 0)
+            & $inspect "faac" 2>$null | Out-Null; $hasFaac = ($LASTEXITCODE -eq 0)
+            & $inspect "fdkaacenc" 2>$null | Out-Null; $hasFdk = ($LASTEXITCODE -eq 0)
+            if (-not $hasVoa -and -not $hasAv -and -not $hasFaac -and -not $hasFdk) { throw "staged runtime missing AAC encoder: need voaacenc/avenc_aac/faac/fdkaacenc" }
+            Write-Host "staged element check OK (incl. AAC)"
+          } else {
+            Write-Host "NOTE: gst-inspect not found, skipping staged element check"
+          }
           # LGPL provenance inside the bundle (design §11)
           @"
           Bundled GStreamer runtime provenance (generated at bundle time)
