@@ -29,6 +29,10 @@ fn main() {
         ] {
             println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
         }
-        println!("cargo:rustc-link-lib=dylib=delayimp");
+        // delayimp.lib provides __delayLoadHelper2. Both forms: link-lib
+        // (no kind — `dylib=` is dropped by cargo for the bin target) and
+        // an explicit link-arg passthrough so link.exe always sees it.
+        println!("cargo:rustc-link-lib=delayimp");
+        println!("cargo:rustc-link-arg=delayimp.lib");
     }
 }
