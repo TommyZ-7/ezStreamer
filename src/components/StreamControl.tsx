@@ -107,6 +107,9 @@ export function StreamControl() {
       {backendMissing && (
         <p className="text-center text-xs text-amber-500">{t("stream.notAvailable")}</p>
       )}
+      {!isLive && backendError && !backendMissing && (
+        <p className="text-center text-xs text-red-400 break-all">{backendError}</p>
+      )}
     </section>
   );
 }
