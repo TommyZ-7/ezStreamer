@@ -94,7 +94,7 @@ jobs:
           # voaacenc→voaacenc, avenc_aac→libav.
           $plugins = @("gstapp","gstvideoconvertscale","gstvideofilter","gstaudioconvert","gstaudioresample",
             "gstflv","gstrtmp2","gstx264","gstopenh264","gstnvcodec","gstqsv","gstamfcodec","gstd3d11","gstwasapi2",
-            "gstvideoparsersbad","gstaudioparsers","gstvoaacenc","gstlibav","gstfaac","gstfdkaac")
+            "gstvideoparsersbad","gstaudioparsers","gstvoaacenc","gstlibav","gstfaac","gstfdkaac","gstmediafoundation")
           $missingPlugins = @()
           foreach ($p in $plugins) {
             $f = Get-Item "$gst/lib/gstreamer-1.0/$p.dll" -ErrorAction SilentlyContinue
@@ -108,8 +108,8 @@ jobs:
           foreach ($r in $requiredPlugins) {
             if ($missingPlugins -contains $r) { throw "bundled runtime missing required plugin: $r" }
           }
-          if ((($missingPlugins -contains "gstvoaacenc") -and ($missingPlugins -contains "gstlibav") -and ($missingPlugins -contains "gstfaac") -and ($missingPlugins -contains "gstfdkaac"))) {
-            throw "bundled runtime missing AAC encoder plugin: need gstvoaacenc (voaacenc), gstlibav (avenc_aac), gstfaac (faac) or gstfdkaac (fdkaacenc)"
+          if ((($missingPlugins -contains "gstvoaacenc") -and ($missingPlugins -contains "gstlibav") -and ($missingPlugins -contains "gstfaac") -and ($missingPlugins -contains "gstfdkaac") -and ($missingPlugins -contains "gstmediafoundation"))) {
+            throw "bundled runtime missing AAC encoder plugin: need gstvoaacenc (voaacenc), gstlibav (avenc_aac), gstmediafoundation (mfaacenc), gstfaac (faac) or gstfdkaac (fdkaacenc)"
           }
           # Plugin scanner + preset/schemas helpers when present (registry update).
           foreach ($extra in @(
@@ -141,7 +141,7 @@ jobs:
           $inspect = "$gst/bin/gst-inspect-1.0.exe"
           if (Test-Path $inspect) {
             Write-Host "Available AAC encoders in FULL runtime:"
-            & $inspect 2>$null | Select-String -Pattern "voaacenc|avenc_aac|faac|fdkaacenc" | Select-Object -First 10 | ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+            & $inspect 2>$null | Select-String -Pattern "voaacenc|avenc_aac|mfaacenc|faac|fdkaacenc" | Select-Object -First 10 | ForEach-Object { Write-Host "  $($_.Line.Trim())" }
             # Isolate the staged subset: override the system plugin path so
             # gst-inspect sees ONLY staged plugins (otherwise the full system
             # runtime masks a missing staged file and the check is useless).
@@ -162,7 +162,12 @@ jobs:
             & $inspect "avenc_aac" 2>$null | Out-Null; $hasAv = ($LASTEXITCODE -eq 0)
             & $inspect "faac" 2>$null | Out-Null; $hasFaac = ($LASTEXITCODE -eq 0)
             & $inspect "fdkaacenc" 2>$null | Out-Null; $hasFdk = ($LASTEXITCODE -eq 0)
-            if (-not $hasVoa -and -not $hasAv -and -not $hasFaac -and -not $hasFdk) { throw "staged runtime missing AAC encoder: need voaacenc/avenc_aac/faac/fdkaacenc" }
+            & $inspect "mfaacenc" 2>$null | Out-Null; $hasMf = ($LASTEXITCODE -eq 0)
+            # A missing (expected) probe leaves $LASTEXITCODE != 0, and GHA's
+            # pwsh shell fails the step on a non-zero $LASTEXITCODE even when
+            # only cmdlets follow — reset explicitly (silent exit-1 trap).
+            $LASTEXITCODE = 0
+            if (-not $hasVoa -and -not $hasAv -and -not $hasFaac -and -not $hasFdk -and -not $hasMf) { throw "staged runtime missing AAC encoder: need voaacenc/avenc_aac/faac/fdkaacenc/mfaacenc" }
             Write-Host "staged element check OK (incl. AAC)"
           } else {
             Write-Host "NOTE: gst-inspect not found, skipping staged element check"
