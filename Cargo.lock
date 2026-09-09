@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "ezstreamer"
-version = "0.1.0-preview01"
+version = "0.1.0-preview02"
 dependencies = [
  "arboard",
  "ashpd",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "ezstreamer-core"
-version = "0.1.0-preview01"
+version = "0.1.0-preview02"
 dependencies = [
  "serde",
  "serde_json",
