@@ -1,11 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod capture;
+#[cfg(windows)]
+mod gst_preload;
 mod ipc;
 
 use ipc::commands::AppState;
 
 fn main() {
+    #[cfg(windows)]
+    gst_preload::preload_bundled_gstreamer_dlls();
     tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![

@@ -362,23 +362,28 @@ pub fn has_element(name: &str) -> bool {
 /// Point GStreamer at the runtime bundled beside the app (Release NSIS).
 /// No-op in dev (uses the system MSVC runtime) and when the bundle layout
 /// is absent. Must run before `gst::init()` in the same process.
+///
+/// NOTE: the process-startup loader is handled earlier by
+/// `crate::gst_preload::preload_bundled_gstreamer_dlls()` (DELAYLOAD +
+/// AddDllDirectory in `main()`); this only sets `PATH`/`GST_PLUGIN_PATH`
+/// for the registry/scanner. Both flat `<exe>/gstreamer/...` and preview.01
+/// `<exe>/resources/gstreamer/...` layouts are probed (core §supervisor).
 pub fn ensure_bundled_runtime(app: &tauri::AppHandle) {
     use tauri::Manager;
     let Ok(res) = app.path().resource_dir() else {
         return;
     };
-    let bin = res.join("gstreamer").join("bin");
-    let plugins = res.join("gstreamer").join("lib").join("gstreamer-1.0");
-    if bin.is_dir() {
-        let mut paths = vec![bin];
-        if let Some(p) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&p));
-        }
-        if let Ok(joined) = std::env::join_paths(paths) {
-            std::env::set_var("PATH", joined);
-        }
+    let Some(bin) = ezstreamer_core::gst::bundled_bin_dir(&res) else {
+        return;
+    };
+    let mut paths = vec![bin];
+    if let Some(p) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&p));
     }
-    if plugins.is_dir() {
+    if let Ok(joined) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", joined);
+    }
+    if let Some(plugins) = ezstreamer_core::gst::bundled_plugin_dir(&res) {
         std::env::set_var("GST_PLUGIN_PATH", &plugins);
     }
 }

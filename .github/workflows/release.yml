@@ -80,11 +80,12 @@ jobs:
           Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
           New-Item -ItemType Directory "$dst/bin" -Force | Out-Null
           New-Item -ItemType Directory "$dst/lib/gstreamer-1.0" -Force | Out-Null
-          # Core DLLs (+ glib/gobject/intl/ffi/pcre2/zlib/openssl runtime deps)
-          Copy-Item "$gst/bin/gstreamer-1.0-0.dll","$gst/bin/gst*-1.0-0.dll" "$dst/bin/"
-          Copy-Item "$gst/bin/glib-2.0-0.dll","$gst/bin/gobject-2.0-0.dll","$gst/bin/gmodule-2.0-0.dll" "$dst/bin/"
-          Copy-Item "$gst/bin/intl-8.dll","$gst/bin/libffi-*.dll","$gst/bin/pcre2-*.dll","$gst/bin/zlib1.dll" "$dst/bin/" -ErrorAction SilentlyContinue
-          Copy-Item "$gst/bin/libcrypto-*-x64.dll","$gst/bin/libssl-*-x64.dll" "$dst/bin/" -ErrorAction SilentlyContinue
+          # Full bin/*.dll closure: the exe DELAYLOADs direct imports (glib/
+          # gobject/gio/gstreamer/...) and Windows resolves transitive deps
+          # (intl/ffi/pcre2/zlib/ssl/orc/...) from the loading DLL's dir +
+          # AddDllDirectory. A hand-picked subset (preview.01) missed
+          # gio/gthread/orc and broke clean machines at process startup.
+          Copy-Item "$gst/bin/*.dll" "$dst/bin/"
           # Plugin allowlist: colorspace/scale, audio convert, mux/sink, encoders
           $plugins = @("gstapp","gstvideoconvertscale","gstvideofilter","gstaudioconvert","gstaudioresample",
             "gstflv","gstrtmp2","gstx264","gstopenh264","gstnvcodec","gstqsv","gstamfcodec","gstd3d11","gstwasapi2")
@@ -93,6 +94,30 @@ jobs:
             if ($f) { Copy-Item $f "$dst/lib/gstreamer-1.0/" }
             else { Write-Host "NOTE: plugin not in runtime: $p" }
           }
+          # Plugin scanner + preset/schemas helpers when present (registry update).
+          foreach ($extra in @(
+            @{ src = "$gst/bin/gst-plugin-scanner.exe"; dir = "$dst/bin" },
+            @{ src = "$gst/libexec/gstreamer-1.0/gst-plugin-scanner.exe"; dir = "$dst/libexec/gstreamer-1.0" }
+          )) {
+            if (Test-Path $extra.src) {
+              New-Item -ItemType Directory $extra.dir -Force | Out-Null
+              Copy-Item $extra.src $extra.dir
+            }
+          }
+          foreach ($share in @("share/glib-2.0/schemas", "share/gstreamer-1.0/presets")) {
+            if (Test-Path "$gst/$share") {
+              New-Item -ItemType Directory "$dst/$share" -Force | Out-Null
+              Copy-Item "$gst/$share/*" "$dst/$share/" -Recurse -ErrorAction SilentlyContinue
+            }
+          }
+          # Fail fast when the DELAYLOAD closure is incomplete.
+          $required = @("gstreamer-1.0-0.dll","gstapp-1.0-0.dll","gstbase-1.0-0.dll",
+            "gobject-2.0-0.dll","glib-2.0-0.dll","gio-2.0-0.dll","gmodule-2.0-0.dll","gthread-2.0-0.dll")
+          foreach ($r in $required) {
+            if (-not (Test-Path "$dst/bin/$r")) { throw "bundled runtime missing: $r" }
+          }
+          Get-ChildItem "$dst/bin/*.dll" | Measure-Object | ForEach-Object { echo "bundled bin DLLs: $($_.Count)" }
+          Get-ChildItem "$dst/lib/gstreamer-1.0/*.dll" | Measure-Object | ForEach-Object { echo "bundled plugins: $($_.Count)" }
           # LGPL provenance inside the bundle (design §11)
           @"
           Bundled GStreamer runtime provenance (generated at bundle time)
