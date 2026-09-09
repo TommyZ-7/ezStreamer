@@ -11,4 +11,6 @@ pub mod supervisor;
 
 pub use pipeline::{build_launch_string, build_plan, EncoderSpec, StreamPlan};
 pub use probe::{pick_best, probe_encoders, probe_with, AUTO_CANDIDATES, MANUAL_ENCODERS};
-pub use supervisor::{retry_backoff_ms, MAX_RETRIES};
+pub use supervisor::{
+    bundled_bin_dir, bundled_plugin_dir, retry_backoff_ms, runtime_search_roots, MAX_RETRIES,
+};
