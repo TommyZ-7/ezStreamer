@@ -1,6 +1,6 @@
 [package]
 name = "ezstreamer-core"
-version = "0.1.0-preview03"
+version = "0.1.0-preview04"
 edition = "2021"
 description = "ezStreamer pure logic: config, GStreamer pipeline/probe, audio mixer, frame pacer (Windows-only)"
 
