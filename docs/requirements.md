@@ -1,7 +1,10 @@
-# ezStreamer 要件定義書 v0.1
+# ezStreamer 要件定義書 v0.2
 
-> 作成日: 2026-09-04 | 対象: 要件定義フェーズ | ステータス: Draft | リポジトリ: `ezStreamer`
-> 派生元: `ezTopaz` 要件定義書 v0.3.2。差分は **Windows専用化 (§4, §6)** と **FFmpeg→GStreamer置換 (§4.4)** のみ。それ以外の機能要件は同一。
+> 作成日: 2026-09-04 | 更新日: 2026-09-10 | 対象: 要件定義フェーズ | ステータス: Draft | リポジトリ: `ezStreamer`
+> 派生元: `ezTopaz` 要件定義書 v0.3.2。v0.1時点の差分は **Windows専用化 (§4, §6)** と **FFmpeg→GStreamer置換 (§4.4)** のみ。それ以外の機能要件は同一 (v0.2でLinux/Flatpakを追加)。
+> v0.2 (2026-09-10): **Linux/Flatpak 対応をスコープに追加** (元は非スコープ)。実装レビュー修正
+> (NVENC preset 要件準拠、設定永続化、ファイルログ、A/V同期、appsrc backpressure、マイクデバイス選択、
+> per-app 音量UI、カーソルON/OFF、プロファイル export/import) を反映。
 
 ---
 
@@ -16,8 +19,9 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 ### 1.3 スコープ
 
 - **含む**: 画面キャプチャ(全画面/ウィンドウ)、音声キャプチャ(システム/アプリ指定(複数選択・含める方式)/マイク)、エンコード・RTMP送信、プロファイル管理(低/中/高 + 1080p警告付)、URLコピー、Ingest URL可変(MVPから対応)、エンコーダ手動選択、日英対応
+- **含む (v0.2追加)**: Linux (Flatpak / Wayland) 対応。画面は xdg-desktop-portal ScreenCast、音声は PipeWire、配布は Flatpak (GNOME runtime)
 - **含まない(今回)**: 録画機能(ローカル保存)、シーン合成(複数ソースのレイアウト)、仮想カメラ、クラウド機能、自動更新、テレメトリ
-- **非スコープ (ezTopazからの削減)**: Linux対応、X11/Wayland/Portal/PipeWire、FFmpeg sidecar・named pipe、AppImage/deb/AUR、ddagrab direct入力
+- **非スコープ (ezTopazからの削減)**: X11/Wayland/Portal/PipeWire の自前実装 (LinuxはPortal/PipeWire経由で対応)、FFmpeg sidecar・named pipe、AppImage/deb/AUR、ddagrab direct入力
 
 ### 1.4 用語
 
@@ -67,7 +71,7 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 ## 4. 開発言語・技術スタック選定
 
 ### 4.1 要求
-- Windows 10 2004+ / 11 専用 (Linux非対応)
+- Windows 10 2004+ / 11、および Linux (Flatpak / Wayland + PipeWire)
 - モダン・軽量 (OBS 200MB+ / Electron 150MB+ は避ける)
 - 画面/ウィンドウ列挙、音声デバイス列挙(アプリ別含む)、RTMP配信、エンコーダ制御 (HW accel) が可能
 - プロセス内でエンコード〜RTMP送信を完結 (sidecarプロセス・名前付きパイプを使わない)
@@ -78,18 +82,22 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 **理由:**
 1. 軽量: TauriはOS WebView利用でChromium同梱不要
 2. プロセス内完結: GStreamerパイプライン (`appsrc → encode → flvmux → rtmp2sink`) により、FFmpeg sidecar・名前付きパイプ・stderrパースが不要。起動高速化・クラッシュ時のゾンビプロセス問題の解消
-3. Native: 画面は `WGC`、音声は `WASAPI` (per-appプロセスループバック含む) をRustで直接取得し、`appsrc` に供給
-4. Windows専用化: Portal/PipeWire/Wayland分岐・AppImage/deb/AUR・Arch検証マトリクスが消え、CI・実装・検証コストが大幅減
+3. Native: 画面は `WGC` (Windows) / Portal ScreenCast (Linux)、音声は `WASAPI` (Windows) / PipeWire (Linux) をRustで直接取得し、`appsrc` に供給
+4. Windows + Linux 対応: WindowsはWGC/WASAPI、Linuxは xdg-desktop-portal (ashpd) + PipeWire。Mixer/FramePacer/GStreamer/UI/config はプラットフォーム非依存
 
 **アーキテクチャ案:**
 ```
-[React UI (ja/en)] <-> [Tauri IPC (Rust)] <-> [Capture Manager (WGC/WASAPI)] -> appsrc
+[React UI (ja/en)] <-> [Tauri IPC (Rust)] <-> [Capture Manager (WGC/WASAPI or Portal/PipeWire)] -> appsrc
                                                 [AudioMixer/FramePacer (Rust)] -> appsrc
                                                 [GstPipeline: encode(H.264) + flvmux + rtmp2sink]
                                                 [Config (profiles.json + ingestUrl)]
 ```
 
-**GStreamer同梱方針:** 公式 GStreamer MSVC 64-bit ランタイムのサブセットをインストーラに同梱し、同梱パス (`resources/gstreamer/`) を `PATH` + `GST_PLUGIN_PATH` に設定して初期化する (完全オフライン要件のため初回DLなし)。起動時にレジストリでHWエンコーダ存在を確認し自動選択。手動オーバーライドも設定画面で可能。
+**GStreamer同梱方針 (Windows):** 公式 GStreamer MSVC 64-bit ランタイムのサブセットを
+インストーラに同梱し、同梱パス (`resources/gstreamer/`) を `PATH` + `GST_PLUGIN_PATH` に設定して
+初期化する (完全オフライン要件のため初回DLなし)。起動時にレジストリでHWエンコーダ存在を確認し
+自動選択。手動オーバーライドも設定画面で可能。**Linux (Flatpak):** GNOME runtime が
+GStreamer + PipeWire + WebKitGTK を提供するため同梱しない。
 
 ### 4.3 エンコーダ対応表
 
@@ -102,7 +110,7 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | `h264_vulkan` | `vulkanh264enc` | 手動選択のみ (自動では選ばない) |
 | `libx264` | `x264enc`, `openh264enc` | ソフトウェアフォールバック (常時利用可扱い) |
 
-共通チューニング (Topaz安全): B-frames 0 / GOP 2秒 / CBR / High profile。x264系に `zerolatency` tuneは使わない (灰色画面不具合)。
+共通チューニング (Topaz安全): B-frames 0 / GOP 2秒 / CBR / High profile。x264系に `zerolatency` tuneは使わない (灰色画面不具合)。NVENC は `preset=high-performance` を使い、`Low Latency` preset は禁止 (灰色画面不具合)。`vulkan` は手動選択のみ。
 
 ---
 
@@ -117,6 +125,10 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | F-SC-03 | プレビュー | 配信前にローカルプレビュー(サムネ更新 1fps) | Must |
 | F-SC-04 | カーソル表示 | カーソル表示ON/OFF (初期ON) | Should |
 
+**実装方針 (Linux):** 画面/ウィンドウは `xdg-desktop-portal` ScreenCast のOSピッカーで選択し、
+PipeWire のリモートfdを直接受けて BGRA フレーム化する。アプリ側のウィンドウ列挙は行わない。
+カーソルは Portal の `CursorMode` (Embedded/Hidden) で指定 (初期ON)。
+
 ### 5.2 音声キャプチャ (MUST)
 
 | ID | 要件 | 詳細 | 優先度 |
@@ -128,7 +140,7 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | F-AU-05 | デバイス永続化 | 選択デバイスをプロファイルに保存、未接続時は警告 | Must |
 | F-AU-06 | サンプルレート | 48kHz固定、自動リサンプル | Must |
 
-**実装方針:** `WASAPI` でプロセス別セッション列挙し、プロセスループバックAPI (Win10 2004+) で取得。合成はRust側で実施し `appsrc` (F32LE 48kHz stereo) へ。
+**実装方針:** Windows は `WASAPI` でプロセス別セッション列挙し、プロセスループバックAPI (Win10 2004+) で取得。Linux は PipeWire で system=既定sinkのmonitor / アプリ=対象node / マイク=Audio/Source node を取得。マイクは選択デバイスを開き、不在時は開始時にエラー表示 (F-AU-05)。合成はRust側で実施し `appsrc` (F32LE 48kHz stereo) へ。
 
 ### 5.3 エンコーダ・プロファイル (MUST)
 
@@ -187,12 +199,13 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | 性能 | CPU (720p30, x264) | < 15% / NVENC時 < 5% |
 |  | メモリ | < 300MB |
 |  | 起動時間 | < 2秒 (レジストリprobeはµsオーダーのためキャッシュ不要) |
-|  | バンドルサイズ | NSIS < 150MB (GStreamer同梱込み。最適化はMVP後) |
+|  | バンドルサイズ | NSIS < 150MB (GStreamer同梱込み) / Flatpak 数MB (GNOME runtime利用) |
 | 互換 | Windows | 10 2004+ / 11 |
+|  | Linux | Wayland + xdg-desktop-portal + PipeWire (Flatpak / GNOME runtime) |
 | 信頼性 | 配信継続 | 瞬断で自動復帰、クラッシュ時パイプライン確実停止 |
 | 保守性 | ログ | GStreamer bus ERROR/EOS 保存、UIに要約 |
 | セキュリティ | 権限 | 画面共有はWGC標準ダイアログ経由。Keyは平文保存(公開情報)明記 |
-| 配布 | インストーラ | Win: NSIS。**自動更新なし、手動DL** |
+| 配布 | インストーラ | Win: NSIS / Linux: Flatpak。**自動更新なし、手動DL** |
 |  | ライセンス | **MIT**でGitHub公開。本体MIT + 同梱GStreamer LGPL (GPL汚染なし) |
 | 国際化 | 日英両対応 | MVPから `ja`/`en` 完全対応 |
 | プライバシ | テレメトリ | **取得しない**、完全オフライン |
@@ -298,6 +311,7 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | AC-09 | 言語切替 ja/en→UIが即時切替、再起動後も保持 | 日英対応 | ● |
 | AC-10 | エンコーダ手動でx264選択→ x264で配信、自動はHW優先 | 手動選択 | ● |
 | AC-11 | GStreamer未導入の素のWindowsでNSIS導入→同梱ランタイムで配信可 | 同梱完結 | ● |
+| AC-12 | Linux (Flatpak) で起動→Portal選択→配信→ffprobe確認 | Wayland+PipeWire実機 | ● |
 
 > MVP: ●=MVPリリース判定に使用 / △=F-ST-04がShouldのためMVP可否未決
 
@@ -311,7 +325,8 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | GStreamer同梱肥大 | 配布サイズ増 | プラグインallowlist同梱 (design §13.2)。不足時は手動選択でx264へ |
 | HWエンコーダなし | 高負荷 | x264フォールバック + 低画質自動提案 |
 | MSVCランタイムのDLL地獄 | 起動失敗 | `ensure_bundled_runtime` で同梱優先+フォールバック、起動時probeで不在を検出して赤表示 |
-| `zerolatency`系の灰色画面 | 視聴不可 | 全エンコーダでB-frames 0/GOP固定/CBRを明示し、tune系は使わない |
+| FlatpakのPipeWire権限不足 | Linuxで音声が取れない | manifestに `--filesystem=xdg-run/pipewire-0` を指定。実機E2Eで確認 |
+| `zerolatency`系の灰色画面 | 視聴不可 | 全エンコーダでB-frames 0/GOP固定/CBRを明示し、tune系は使わない。NVENCは `high-performance` |
 
 ---
 
@@ -327,3 +342,4 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 | 版 | 日付 | 変更 |
 |---|---|---|
 | 0.1 | 2026-09-04 | 初版作成 (ezTopaz v0.3.2からfork: Windows専用化、FFmpeg→GStreamer、Linux/X11/Wayland/Portal/PipeWire/ffmpeg-sidecar/named-pipe/ddagrab関連を削除、AC-11同梱完結を追加) |
+| 0.2 | 2026-09-10 | Linux/Flatpak (Portal ScreenCast + PipeWire) をスコープへ追加。レビュー修正を反映: NVENC `high-performance`、設定永続化 (F-CF-02/05)、ファイルログ (F-CF-04)、A/V同期とappsrc backpressure、マイクデバイス選択 (F-AU-03/05)、per-app 音量/ミュートUI (F-AU-04)、カーソルON/OFF (F-SC-04)、プロファイル export/import (F-CF-03)、AC-12 |
