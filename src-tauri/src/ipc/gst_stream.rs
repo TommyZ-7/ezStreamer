@@ -48,7 +48,7 @@ pub struct GstStream {
     pub retry_count: u32,
     started_at: Instant,
     video_frames: Arc<AtomicU64>,
-    bytes_pushed: Arc<AtomicU64>,
+    encoded_bytes: Arc<AtomicU64>,
     status: Arc<Mutex<ezstreamer_core::ipc_types::StreamStatus>>,
     done: Arc<Mutex<Option<bool>>>,
     stop: Arc<AtomicBool>,
@@ -59,7 +59,7 @@ impl GstStream {
     pub fn status(&self) -> ezstreamer_core::ipc_types::StreamStatus {
         let elapsed = self.started_at.elapsed().as_secs().max(1);
         let frames = self.video_frames.load(Ordering::Relaxed);
-        let bytes = self.bytes_pushed.load(Ordering::Relaxed);
+        let bytes = self.encoded_bytes.load(Ordering::Relaxed);
         let expected = self.plan.fps as u64 * elapsed;
         ezstreamer_core::ipc_types::StreamStatus {
             is_live: self.handle.is_some() && self.done.lock().unwrap().is_none(),
@@ -104,7 +104,7 @@ pub fn spawn_pipeline(
 ) -> Result<GstStream, String> {
     use gstreamer as gst;
     use gstreamer::prelude::*;
-    use gstreamer_app::AppSrc;
+    use gstreamer_app::{AppLeakyType, AppSrc};
 
     gst::init().map_err(|e| {
         format!("GStreamer init failed: {e} (install the MSVC runtime, design §13.2)")
@@ -112,7 +112,7 @@ pub fn spawn_pipeline(
 
     let started_at = Instant::now();
     let video_frames = Arc::new(AtomicU64::new(0));
-    let bytes_pushed = Arc::new(AtomicU64::new(0));
+    let encoded_bytes = Arc::new(AtomicU64::new(0));
     let done: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
     let stop = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Mutex::new(
@@ -177,15 +177,32 @@ pub fn spawn_pipeline(
     let acaps = audio_src_caps();
     a_caps.set_property("caps", &acaps);
 
-    // appsrc streaming attributes (live, timestamped).
-    for e in [&v_src, &a_src] {
-        let appsrc = e.clone().dynamic_cast::<AppSrc>().map_err(|_| {
-            "video_src/audio_src is not appsrc (registry provides a different element?)".to_string()
-        })?;
+    // appsrc streaming attributes (live, timestamped). Timestamps come from
+    // the pipeline clock (`do-timestamp`), not from a fixed frame counter:
+    // the pacer drops missed ticks after a stall, so per-frame PTS increments
+    // fell permanently behind wall clock and desynced A/V.
+    //
+    // Queues are bounded and leaky (drop old): when the network backpressures,
+    // blocks are dropped instead of growing appsrc's internal queue without
+    // limit (block=false would otherwise keep accepting pushes forever).
+    let v_appsrc = v_src
+        .clone()
+        .dynamic_cast::<AppSrc>()
+        .map_err(|_| "video_src is not appsrc".to_string())?;
+    let a_appsrc = a_src
+        .clone()
+        .dynamic_cast::<AppSrc>()
+        .map_err(|_| "audio_src is not appsrc".to_string())?;
+    for appsrc in [&v_appsrc, &a_appsrc] {
         appsrc.set_format(gst::Format::Time);
         appsrc.set_is_live(true);
         appsrc.set_do_timestamp(true);
+        appsrc.set_leaky_type(AppLeakyType::Downstream);
     }
+    v_appsrc.set_max_bytes(0); // 0 = unlimited; max-buffers is the limit
+    v_appsrc.set_max_buffers(4); // ≈4 paced frames (~66ms at 60fps)
+    a_appsrc.set_max_bytes(0);
+    a_appsrc.set_max_buffers(50); // ≈500ms of 10ms mixer blocks
     v_src.set_property("caps", &vcaps);
     a_src.set_property("caps", &acaps);
 
@@ -200,11 +217,19 @@ pub fn spawn_pipeline(
         encoder: "auto".into(),
         warn: None,
     };
-    for (k, v) in plan.encoder.gst_props(&profile) {
+    let encoder_name = encoder
+        .factory()
+        .map(|f| f.name().to_string())
+        .unwrap_or_else(|| plan.encoder_element.clone());
+    for (k, v) in plan.encoder.gst_props_for(&encoder_name, &profile) {
         if encoder.has_property(k.as_str(), None) {
             encoder.set_property_from_str(k.as_str(), v.as_str());
         }
     }
+    crate::logging::info(&format!(
+        "stream start: encoder={encoder_name} {}x{}@{}fps v={}kbps a={}kbps url={}",
+        plan.w, plan.h, plan.fps, plan.v_kbps, plan.a_kbps, plan.rtmp_url
+    ));
     if aacenc.has_property("bitrate", None) {
         // avenc_aac/faac/fdkaacenc expect gint, voaacenc/mfaacenc expect
         // guint; the string form deserializes to either. A typed
@@ -242,34 +267,32 @@ pub fn spawn_pipeline(
     mux.link(&sink)
         .map_err(|e| format!("mux link failed: {e:?}"))?;
 
-    // Feeders: paced pump channels → appsrc buffers (nanosecond PTS).
-    let frame_dur_ns = 1_000_000_000u64 / plan.fps.max(1) as u64;
-    let frame_dur = gst::ClockTime::from_nseconds(frame_dur_ns);
+    // F-ST-03: measure the *encoded* bitrate at the mux output. Counting
+    // pushed BGRA/F32 bytes overstated the wire rate by roughly 10x.
+    let mux_pad = mux.static_pad("src").ok_or("mux has no src pad")?;
+    let eb = encoded_bytes.clone();
+    mux_pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+        if let Some(buf) = info.buffer() {
+            eb.fetch_add(buf.size() as u64, Ordering::Relaxed);
+        }
+        gst::PadProbeReturn::Ok
+    });
+
+    // Feeders: paced pump channels → appsrc buffers. PTS is left unset so
+    // appsrc stamps each buffer with the pipeline running time.
     let vf = video_frames.clone();
-    let bf = bytes_pushed.clone();
     let stop_v = stop.clone();
     std::thread::Builder::new()
         .name("gst-video-feed".into())
         .spawn(move || {
-            let appsrc = v_src
-                .dynamic_cast::<AppSrc>()
-                .expect("video_src is appsrc");
-            let mut pts_ns = 0u64;
             while !stop_v.load(Ordering::Relaxed) {
                 match video_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(frame) => {
-                        let n = frame.len() as u64;
-                        let mut buf = gst::Buffer::from_slice(frame);
-                        {
-                            let b = buf.get_mut().unwrap();
-                            b.set_pts(gst::ClockTime::from_nseconds(pts_ns));
-                            b.set_duration(frame_dur);
-                        }
-                        pts_ns += frame_dur_ns;
-                        if appsrc.push_buffer(buf).is_ok() {
+                        let buf = gst::Buffer::from_slice(frame);
+                        if v_appsrc.push_buffer(buf).is_ok() {
                             vf.fetch_add(1, Ordering::Relaxed);
-                            bf.fetch_add(n, Ordering::Relaxed);
                         } else {
+                            crate::logging::error("video feeder: appsrc push failed (pipeline flushing)");
                             break; // pipeline flushing
                         }
                     }
@@ -277,27 +300,22 @@ pub fn spawn_pipeline(
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
-            let _ = appsrc.end_of_stream();
+            let _ = v_appsrc.end_of_stream();
         })
         .map_err(|e| format!("video feeder spawn: {e}"))?;
 
-    let bf2 = bytes_pushed.clone();
     let stop_a = stop.clone();
     std::thread::Builder::new()
         .name("gst-audio-feed".into())
         .spawn(move || {
-            let appsrc = a_src
-                .dynamic_cast::<AppSrc>()
-                .expect("audio_src is appsrc");
             while !stop_a.load(Ordering::Relaxed) {
                 match audio_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(block) => {
-                        let n = block.len() as u64 * 4;
                         let bytes: Vec<u8> =
                             block.iter().flat_map(|s| s.to_le_bytes()).collect();
-                        if appsrc.push_buffer(gst::Buffer::from_slice(bytes)).is_ok() {
-                            bf2.fetch_add(n, Ordering::Relaxed);
+                        if a_appsrc.push_buffer(gst::Buffer::from_slice(bytes)).is_ok() {
                         } else {
+                            crate::logging::error("audio feeder: appsrc push failed (pipeline flushing)");
                             break;
                         }
                     }
@@ -305,7 +323,7 @@ pub fn spawn_pipeline(
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
-            let _ = appsrc.end_of_stream();
+            let _ = a_appsrc.end_of_stream();
         })
         .map_err(|e| format!("audio feeder spawn: {e}"))?;
 
@@ -331,12 +349,14 @@ pub fn spawn_pipeline(
                             break;
                         }
                         gst::MessageView::Error(err) => {
-                            eprintln!(
+                            let msg = format!(
                                 "gst bus ERROR from {:?}: {} ({:?})",
                                 err.src().map(|s| s.path_string()),
                                 err.error(),
                                 err.debug()
                             );
+                            crate::logging::error(&msg);
+                            eprintln!("{msg}");
                             ok = false;
                             break;
                         }
@@ -354,6 +374,7 @@ pub fn spawn_pipeline(
     std::thread::sleep(std::time::Duration::from_millis(400));
     if let Some(false) = *done.lock().unwrap() {
         stop.store(true, Ordering::Relaxed);
+        crate::logging::error("pipeline failed during preroll");
         return Err("GStreamer pipeline failed during preroll (see log)".into());
     }
 
@@ -362,7 +383,7 @@ pub fn spawn_pipeline(
         retry_count: retry,
         started_at,
         video_frames,
-        bytes_pushed,
+        encoded_bytes,
         status,
         done,
         stop,

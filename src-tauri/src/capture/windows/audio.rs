@@ -14,18 +14,52 @@ use std::time::Duration;
 const TARGET_RATE: u32 = 48_000;
 const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
 
-pub fn start_audio(selection: &AudioSelection, sink: AudioSink) -> super::Result<AudioCapture> {
+pub fn start_audio(
+    selection: &AudioSelection,
+    sink: AudioSink,
+    app: Option<tauri::AppHandle>,
+) -> super::Result<AudioCapture> {
+    use ezstreamer_core::ipc_types::StreamError;
+    use tauri::Emitter;
+
     let mut cap = AudioCapture::new(sink.clone());
+
+    // F-AU-05: a saved-but-disconnected mic must fail loudly instead of
+    // silently falling back to the default endpoint.
+    if selection.mic.enabled {
+        ensure_mic_device(&selection.mic.device)?;
+    }
+    let valid_apps: Vec<u32> = if selection.mode == "apps" {
+        selection
+            .apps
+            .iter()
+            .filter_map(|a| a.rsplit(':').next().and_then(|s| s.parse::<u32>().ok()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if selection.mode != "system" && !selection.mic.enabled && valid_apps.is_empty() {
+        return Err(super::CaptureError::Failed(
+            "no audio source selected".into(),
+        ));
+    }
 
     if selection.mode == "system" {
         let sink2 = sink.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
+        let app2 = app.clone();
         let handle = std::thread::Builder::new()
             .name("wasapi-system".into())
             .spawn(move || {
                 if let Err(e) = run_system_loopback(sink2, stop2) {
-                    eprintln!("system loopback ended: {e}");
+                    crate::logging::error(&format!("system loopback ended: {e}"));
+                    if let Some(app2) = app2 {
+                        let _ = app2.emit(
+                            "stream://error",
+                            StreamError { code: "audio".into(), msg: e.to_string() },
+                        );
+                    }
                 }
             })
             .map_err(err)?;
@@ -36,38 +70,81 @@ pub fn start_audio(selection: &AudioSelection, sink: AudioSink) -> super::Result
         let sink2 = sink.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
+        let device = selection.mic.device.clone();
+        let app2 = app.clone();
         let handle = std::thread::Builder::new()
             .name("wasapi-mic".into())
             .spawn(move || {
-                if let Err(e) = run_mic(sink2, stop2) {
-                    eprintln!("mic capture ended: {e}");
+                if let Err(e) = run_mic(sink2, stop2, &device) {
+                    crate::logging::error(&format!("mic capture ended: {e}"));
+                    if let Some(app2) = app2 {
+                        let _ = app2.emit(
+                            "stream://error",
+                            StreamError { code: "audio".into(), msg: e.to_string() },
+                        );
+                    }
                 }
             })
             .map_err(err)?;
         cap.add(stop, handle);
     }
 
-    if selection.mode == "apps" {
-        for app_id in &selection.apps {
-            let Some(pid) = app_id.rsplit(':').next().and_then(|s| s.parse::<u32>().ok()) else {
-                continue;
-            };
-            let sink2 = sink.clone();
-            let stop = Arc::new(AtomicBool::new(false));
-            let stop2 = stop.clone();
-            let handle = std::thread::Builder::new()
-                .name(format!("wasapi-app-{pid}"))
-                .spawn(move || {
-                    if let Err(e) = run_process_loopback(pid, sink2, stop2) {
-                        eprintln!("process loopback ({pid}) ended: {e}");
+    for pid in valid_apps {
+        let sink2 = sink.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let app2 = app.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("wasapi-app-{pid}"))
+            .spawn(move || {
+                if let Err(e) = run_process_loopback(pid, sink2, stop2) {
+                    crate::logging::error(&format!("process loopback ({pid}) ended: {e}"));
+                    if let Some(app2) = app2 {
+                        let _ = app2.emit(
+                            "stream://error",
+                            StreamError { code: "audio".into(), msg: e.to_string() },
+                        );
                     }
-                })
-                .map_err(err)?;
-            cap.add(stop, handle);
-        }
+                }
+            })
+            .map_err(err)?;
+        cap.add(stop, handle);
     }
 
     Ok(cap)
+}
+
+/// True when `device_id` is "default"/empty or an active capture endpoint.
+/// Runs its own COM init so callers on any thread can use it.
+fn ensure_mic_device(device_id: &str) -> super::Result<()> {
+    use windows::Win32::Media::Audio::{eCapture, DEVICE_STATE_ACTIVE};
+    if device_id.is_empty() || device_id == "default" {
+        return Ok(());
+    }
+    co_init();
+    unsafe {
+        let enumerator: windows::Win32::Media::Audio::IMMDeviceEnumerator =
+            windows::Win32::System::Com::CoCreateInstance(
+                &windows::Win32::Media::Audio::MMDeviceEnumerator,
+                None,
+                windows::Win32::System::Com::CLSCTX_ALL,
+            )
+            .map_err(err)?;
+        let collection = enumerator
+            .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
+            .map_err(err)?;
+        let count = collection.GetCount().map_err(err)?;
+        for i in 0..count {
+            let Ok(dev) = collection.Item(i) else { continue };
+            let id = dev.GetId().map(|w| w.to_string().unwrap_or_default()).unwrap_or_default();
+            if id == device_id {
+                return Ok(());
+            }
+        }
+    }
+    Err(super::CaptureError::Failed(format!(
+        "microphone device not found: {device_id} (F-AU-05)"
+    )))
 }
 
 fn run_system_loopback(sink: AudioSink, stop: Arc<AtomicBool>) -> Result<()> {
@@ -101,7 +178,7 @@ fn run_system_loopback(sink: AudioSink, stop: Arc<AtomicBool>) -> Result<()> {
     }
 }
 
-fn run_mic(sink: AudioSink, stop: Arc<AtomicBool>) -> Result<()> {
+fn run_mic(sink: AudioSink, stop: Arc<AtomicBool>, device_id: &str) -> Result<()> {
     use windows::Win32::Media::Audio::{eCapture, eMultimedia};
     co_init();
     unsafe {
@@ -112,9 +189,19 @@ fn run_mic(sink: AudioSink, stop: Arc<AtomicBool>) -> Result<()> {
                 windows::Win32::System::Com::CLSCTX_ALL,
             )
             .map_err(err)?;
-        let dev = enumerator
-            .GetDefaultAudioEndpoint(eCapture, eMultimedia)
-            .map_err(err)?;
+        // F-AU-03/F-AU-05: honor the selected capture endpoint, not just the
+        // system default.
+        let dev = if device_id.is_empty() || device_id == "default" {
+            enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia).map_err(err)?
+        } else {
+            enumerator
+                .GetDevice(&windows::core::HSTRING::from(device_id))
+                .map_err(|e| {
+                    super::CaptureError::Failed(format!(
+                        "microphone device unavailable: {device_id} ({e})"
+                    ))
+                })?
+        };
         let client: windows::Win32::Media::Audio::IAudioClient =
             dev.Activate(windows::Win32::System::Com::CLSCTX_ALL, None).map_err(err)?;
         let fmt = client.GetMixFormat().map_err(err)?;
@@ -163,9 +250,7 @@ unsafe fn wasapi_polling(
             let _ = client.Stop();
             return Ok(());
         }
-        let Ok(mut packet) = capture.GetNextPacketSize() else {
-            return Ok(());
-        };
+        let mut packet = capture.GetNextPacketSize().map_err(err)?;
         while packet > 0 {
             let mut ptr: *mut u8 = std::ptr::null_mut();
             let mut frames = 0u32;
@@ -197,7 +282,7 @@ unsafe fn wasapi_polling(
                 }
             }
             let _ = capture.ReleaseBuffer(frames);
-            packet = capture.GetNextPacketSize().unwrap_or(0);
+            packet = capture.GetNextPacketSize().map_err(err)?;
         }
         std::thread::sleep(Duration::from_millis(5));
     }

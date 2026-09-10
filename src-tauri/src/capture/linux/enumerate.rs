@@ -27,7 +27,7 @@ pub fn list_windows() -> Result<Vec<WindowInfo>> {
 }
 
 pub fn list_audio_devices() -> Result<AudioDevices> {
-    let inputs: Vec<DeviceInfo> = vec![DeviceInfo {
+    let mut inputs: Vec<DeviceInfo> = vec![DeviceInfo {
         id: "default".into(),
         label: "Default Microphone".into(),
         is_default: true,
@@ -52,8 +52,9 @@ pub fn list_audio_devices() -> Result<AudioDevices> {
 
     struct Ud {
         apps: Vec<AppAudio>,
+        sources: Vec<DeviceInfo>,
     }
-    let ud = Arc::new(Mutex::new(Ud { apps: Vec::new() }));
+    let ud = Arc::new(Mutex::new(Ud { apps: Vec::new(), sources: Vec::new() }));
     let ud2 = ud.clone();
     let _listener = registry
         .add_listener_local()
@@ -65,18 +66,28 @@ pub fn list_audio_devices() -> Result<AudioDevices> {
             let Some(class) = props.get("media.class") else {
                 return;
             };
-            if class != "Stream/Output/Audio" {
-                return;
-            }
             let label = props
                 .get("node.description")
                 .or_else(|| props.get("application.process.binary"))
                 .unwrap_or("unknown")
                 .to_string();
-            ud2.lock().unwrap().apps.push(AppAudio {
-                id: format!("pw:{}", global.id),
-                label,
-            });
+            match class {
+                "Stream/Output/Audio" => {
+                    ud2.lock().unwrap().apps.push(AppAudio {
+                        id: format!("pw:{}", global.id),
+                        label,
+                    });
+                }
+                // F-AU-03: real capture endpoints for the mic selector.
+                "Audio/Source" | "Audio/Source/Virtual" => {
+                    ud2.lock().unwrap().sources.push(DeviceInfo {
+                        id: format!("pw:{}", global.id),
+                        label,
+                        is_default: false,
+                    });
+                }
+                _ => {}
+            }
         })
         .register();
 
@@ -97,7 +108,11 @@ pub fn list_audio_devices() -> Result<AudioDevices> {
         drop(context);
     }
 
-    let apps = ud.lock().unwrap().apps.clone();
+    let (apps, sources) = {
+        let u = ud.lock().unwrap();
+        (u.apps.clone(), u.sources.clone())
+    };
+    inputs.extend(sources);
     Ok(AudioDevices {
         inputs,
         outputs: Vec::new(),
