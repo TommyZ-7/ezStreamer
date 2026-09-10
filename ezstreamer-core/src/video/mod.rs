@@ -9,7 +9,7 @@ pub mod nv12;
 pub mod sink;
 
 pub use nv12::{bgra_to_nv12, bgra_to_nv12_into, nv12_frame_size, scale_bgra_to_nv12};
-pub use sink::{bgra_to_rgba, scale_bgra, scale_bgra_into, VideoSink};
+pub use sink::{bgra_to_rgba, scale_bgra, scale_bgra_into, scale_bgra_strided, VideoSink};
 
 use crate::error::{Error, Result};
 use std::time::{Duration, Instant};

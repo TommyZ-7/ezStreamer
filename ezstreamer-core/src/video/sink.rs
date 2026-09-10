@@ -126,6 +126,49 @@ pub fn scale_bgra(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) ->
     dst
 }
 
+/// Like [`scale_bgra`], but reads source rows at `src_stride` bytes.
+/// PipeWire portal screencast buffers can pad rows (stride > `src_w*4`);
+/// reading them as packed shifts every row and skews the image
+/// (review 2026-09-10). Returns `None` when the buffer is too short for a
+/// padded row (partial/corrupt frame); `src_stride <= src_w*4` falls back
+/// to the packed path.
+pub fn scale_bgra_strided(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    src_stride: usize,
+    dst_w: u32,
+    dst_h: u32,
+) -> Option<Vec<u8>> {
+    let packed_row = (src_w as usize).checked_mul(4)?;
+    if src_stride <= packed_row {
+        return Some(scale_bgra(src, src_w, src_h, dst_w, dst_h));
+    }
+    let packed = repack_bgra_rows(src, src_w, src_h, src_stride)?;
+    Some(scale_bgra(&packed, src_w, src_h, dst_w, dst_h))
+}
+
+/// Copy `src_h` rows of `src_w` 4-byte pixels from a `stride`-byte pitched
+/// buffer into a tightly packed buffer. `None` when the source cannot hold
+/// the last row (short chunk).
+fn repack_bgra_rows(src: &[u8], src_w: u32, src_h: u32, stride: usize) -> Option<Vec<u8>> {
+    let row = (src_w as usize).checked_mul(4)?;
+    let h = src_h as usize;
+    if row == 0 || h == 0 {
+        return None;
+    }
+    let needed = (h - 1).checked_mul(stride)?.checked_add(row)?;
+    if src.len() < needed {
+        return None;
+    }
+    let mut out = vec![0u8; row.checked_mul(h)?];
+    for y in 0..h {
+        let start = y * stride;
+        out[y * row..(y + 1) * row].copy_from_slice(&src[start..start + row]);
+    }
+    Some(out)
+}
+
 fn fill_letterbox_black(dst: &mut [u8]) {
     // opaque black BGRA [0,0,0,255]: memset + alpha plane.
     dst.fill(0);
@@ -312,6 +355,47 @@ mod tests {
         let dst = scale_bgra(&[0u8; 3], 4, 4, 4, 4);
         assert_eq!(dst.len(), 64);
         assert!(dst.chunks(4).all(|px| px == [0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn strided_scale_reads_padded_rows() {
+        // 2x2 BGRA with 8 bytes of padding per row: a packed read would
+        // shift row 1 by the padding and skew the image.
+        let (w, h, stride) = (2usize, 2usize, 2 * 4 + 8);
+        let mut src = vec![0u8; stride * h];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * stride + x * 4;
+                src[i] = (y * 10 + x) as u8;
+                src[i + 3] = 255;
+            }
+        }
+        // Poison the padding: it must never leak into the output.
+        for y in 0..h {
+            for p in 0..8 {
+                src[y * stride + 8 + p] = 0xFF;
+            }
+        }
+        let dst = scale_bgra_strided(&src, 2, 2, stride, 2, 2).unwrap();
+        assert_eq!(dst.len(), 16);
+        assert_eq!(&dst[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&dst[4..8], &[1, 0, 0, 255]);
+        assert_eq!(&dst[8..12], &[10, 0, 0, 255]);
+        assert_eq!(&dst[12..16], &[11, 0, 0, 255]);
+    }
+
+    #[test]
+    fn strided_scale_rejects_truncated_padded_buffer() {
+        // Last padded row missing: must fail instead of reading past the end.
+        let src = vec![0u8; 20];
+        assert!(scale_bgra_strided(&src, 2, 2, 2 * 4 + 8, 2, 2).is_none());
+    }
+
+    #[test]
+    fn strided_scale_tight_stride_matches_packed() {
+        let src: Vec<u8> = (0..32).collect();
+        let strided = scale_bgra_strided(&src, 4, 2, 4 * 4, 4, 2).unwrap();
+        assert_eq!(strided, scale_bgra(&src, 4, 2, 4, 2));
     }
 
     #[test]
