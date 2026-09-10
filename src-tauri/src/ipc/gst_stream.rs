@@ -5,11 +5,18 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA) → videoconvert → videoscale → capsfilter
-//!   → queue → <encoder> → h264parse → mux.
+//!   → queue → videoconvert → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
-//!   audioresample → capsfilter → queue → <aacenc> → aacparse → mux.
+//!   audioresample → capsfilter → queue → audioconvert → <aacenc> → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
 //! ```
+//!
+//! The converters after each `queue` are load-bearing, not redundant:
+//! the capsfilter pins BGRA / F32LE for the pacer, but HW encoders accept
+//! only subsets (`vah264enc`: NV12; `faac`/`fdkaacenc`: S16LE). `pad_link`
+//! checks live caps — not just templates — so without the tail converter
+//! the queue→encoder link itself fails (e.g. `vqueue`→`vah264enc`).
+//! When formats already match the converter is a passthrough.
 //!
 //! Capture stays in Rust (WGC + WASAPI → `VideoSink`/`AudioSink` pumps);
 //! feeder threads move paced frames into the two `appsrc` elements.
@@ -123,6 +130,9 @@ pub fn spawn_pipeline(
     let v_scale = mk("videoscale", "vscale")?;
     let v_caps = mk("capsfilter", "vcaps")?;
     let v_queue = mk("queue", "vqueue")?;
+    // Tail converter: adapts the pinned BGRA caps to whatever the encoder
+    // accepts (see topology note above; e.g. NV12 for vah264enc).
+    let v_conv2 = mk("videoconvert", "vconv2")?;
     let encoder = find_encoder(&plan.encoder)
         .ok_or_else(|| format!("no GStreamer element for {}", plan.encoder.id()))?;
     let v_parse = mk("h264parse", "vparse")?;
@@ -131,6 +141,9 @@ pub fn spawn_pipeline(
     let a_res = mk("audioresample", "ares")?;
     let a_caps = mk("capsfilter", "acaps")?;
     let a_queue = mk("queue", "aqueue")?;
+    // Tail converter: adapts the pinned F32LE caps to whatever the AAC
+    // encoder accepts (faac/fdkaacenc take S16LE only).
+    let a_conv2 = mk("audioconvert", "aconv2")?;
     let aacenc = find_aacenc().ok_or_else(|| {
         "no AAC encoder element (voaacenc/avenc_aac/mfaacenc/faac/fdkaacenc) found (runtime/plugins incomplete)"
             .to_string()
@@ -194,16 +207,16 @@ pub fn spawn_pipeline(
 
     pipeline
         .add_many(&[
-            &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &a_src, &a_conv,
-            &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux, &sink,
+            &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2, &encoder, &v_parse, &a_src,
+            &a_conv, &a_res, &a_caps, &a_queue, &a_conv2, &aacenc, &a_parse, &mux, &sink,
         ])
         .map_err(|e| format!("pipeline add failed: {e}"))?;
     gst::Element::link_many(&[
-        &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &mux,
+        &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2, &encoder, &v_parse, &mux,
     ])
     .map_err(|e| format!("video link failed: {e:?}"))?;
     gst::Element::link_many(&[
-        &a_src, &a_conv, &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux,
+        &a_src, &a_conv, &a_res, &a_caps, &a_queue, &a_conv2, &aacenc, &a_parse, &mux,
     ])
     .map_err(|e| format!("audio link failed: {e:?}"))?;
     mux.link(&sink)
