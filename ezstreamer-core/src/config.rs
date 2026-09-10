@@ -297,9 +297,11 @@ mod tests {
 
         assert_eq!(load(&path).unwrap(), ProfilesConfig::default());
 
-        let mut cfg = ProfilesConfig::default();
-        cfg.last_stream_key = "test-key-123".into();
-        cfg.ingest_url = "rtmp://custom.example/live".into();
+        let cfg = ProfilesConfig {
+            last_stream_key: "test-key-123".into(),
+            ingest_url: "rtmp://custom.example/live".into(),
+            ..ProfilesConfig::default()
+        };
         save(&path, &cfg).unwrap();
         assert_eq!(load(&path).unwrap(), cfg);
 

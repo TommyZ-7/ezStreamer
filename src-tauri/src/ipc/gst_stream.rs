@@ -306,7 +306,12 @@ pub fn spawn_pipeline(
             }
             let _ = v_appsrc.end_of_stream();
         })
-        .map_err(|e| format!("video feeder spawn: {e}"))?;
+        .map_err(|e| {
+            // Release feeders spawned before this one; otherwise a spawn
+            // failure would leave them waiting for PLAYING forever.
+            stop.store(true, Ordering::Relaxed);
+            format!("video feeder spawn: {e}")
+        })?;
 
     let stop_a = stop.clone();
     let pipeline_a = pipeline.clone();
@@ -331,7 +336,11 @@ pub fn spawn_pipeline(
             }
             let _ = a_appsrc.end_of_stream();
         })
-        .map_err(|e| format!("audio feeder spawn: {e}"))?;
+        .map_err(|e| {
+            // Releases the already-spawned video feeder (same reasoning).
+            stop.store(true, Ordering::Relaxed);
+            format!("audio feeder spawn: {e}")
+        })?;
 
     // Bus supervisor: ERROR/EOS ends the run (F-ST-04 retry in commands);
     // user stop sends EOS and drains, with a hard deadline so a dead RTMP
@@ -391,7 +400,12 @@ pub fn spawn_pipeline(
             stop_t.store(true, Ordering::Relaxed);
             *done_t.lock().unwrap() = Some(ok);
         })
-        .map_err(|e| format!("bus thread spawn: {e}"))?;
+        .map_err(|e| {
+            // Releases both feeders: without the bus thread the pipeline
+            // never reaches PLAYING, so `wait_for_playing` would spin forever.
+            stop.store(true, Ordering::Relaxed);
+            format!("bus thread spawn: {e}")
+        })?;
 
     // Fail fast: if the pipeline errors during preroll, report quickly
     // instead of hanging start_stream.

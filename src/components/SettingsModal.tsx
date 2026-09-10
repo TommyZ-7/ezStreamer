@@ -237,11 +237,13 @@ const BUILTIN_IDS = ["low", "mid", "high", "1080p"];
 
 function NumberCell({
   value,
+  min = 1,
   max,
   onChange,
   className = "w-20",
 }: {
   value: number;
+  min?: number;
   max: number;
   onChange: (v: number) => void;
   className?: string;
@@ -250,6 +252,7 @@ function NumberCell({
   return (
     <input
       type="number"
+      min={min}
       className={`${className} rounded border bg-zinc-800 px-1 py-0.5 ${over ? "border-red-600" : "border-zinc-700"}`}
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}

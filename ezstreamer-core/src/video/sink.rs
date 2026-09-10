@@ -204,7 +204,12 @@ fn copy_bgra_opaque(dst: &mut [u8], src: &[u8]) {
     let n = dst.len().min(src.len());
     let (d, s) = (&mut dst[..n], &src[..n]);
     // 4-byte chunks: BGR copy + A=255. Compiler auto-vectorizes this loop.
-    for (dpx, spx) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
+    for (dpx, spx) in d
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(s.as_chunks::<4>().0.iter())
+    {
         dpx[0] = spx[0];
         dpx[1] = spx[1];
         dpx[2] = spx[2];
@@ -229,6 +234,7 @@ fn fit_output(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_nearest(
     dst: &mut [u8],
     src: &[u8],
@@ -265,7 +271,7 @@ fn blit_nearest(
         .map(|n| n.get())
         .unwrap_or(1);
     // Thread per ~64 rows; small frames stay single-threaded (spawn cost).
-    let want = (oh + 63) / 64;
+    let want = oh.div_ceil(64);
     let n_threads = threads.min(want).max(1).min(oh.max(1));
     if n_threads <= 1 {
         blit_rows(middle, src, &map_x, sw, sh, dw, ow, ox, 0, oh, sh_u64, oh_u64);
@@ -321,7 +327,9 @@ fn blit_rows(
 
 /// BGRA → RGBA in place (for PNG preview encoding).
 pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
-    bgra.chunks_exact(4)
+    bgra.as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|px| [px[2], px[1], px[0], px[3]])
         .collect()
 }
@@ -441,7 +449,7 @@ mod tests {
         assert_eq!(dst.len(), 1280 * 720 * 4);
         // center pixel carries scaled content, corner is letterbox or content
         // but alpha must stay opaque everywhere.
-        assert!(dst.chunks_exact(4).all(|px| px[3] == 255));
+        assert!(dst.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
         let center = ((360 * 1280 + 640) * 4) as usize;
         assert_ne!(&dst[center..center + 3], &[0, 0, 0]);
     }

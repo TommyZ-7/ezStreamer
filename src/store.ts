@@ -393,7 +393,7 @@ export const useStore = create<AppState>((set, get) => ({
         cursor: s.cursor,
         appMix: s.appMix,
       });
-      set({ status, isLive: status.isLive, previewing: false });
+      set({ status, isLive: status.isLive, previewing: false, backendError: null });
     } catch (e) {
       set({ backendError: String(e) });
     }
@@ -421,7 +421,7 @@ export const useStore = create<AppState>((set, get) => ({
         cursor: s.cursor,
         appMix: s.appMix,
       });
-      set({ previewing: true });
+      set({ previewing: true, backendError: null });
     } catch (e) {
       set({ backendError: String(e) });
     }

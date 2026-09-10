@@ -198,8 +198,10 @@ mod tests {
 
     #[test]
     fn mic_enabled_false_is_not_mixed() {
-        let mut m = Mixer::default();
-        m.mic = SourceState { enabled: false, ..Default::default() };
+        let m = Mixer {
+            mic: SourceState { enabled: false, ..Default::default() },
+            ..Default::default()
+        };
         let samples = BTreeMap::new();
         let (out, vu) = m.mix(&samples, Some(&[0.5, 0.5]));
         assert_eq!(out, vec![0.0, 0.0]);
@@ -208,8 +210,10 @@ mod tests {
 
     #[test]
     fn mic_muted_reads_zero_vu() {
-        let mut m = Mixer::default();
-        m.mic = SourceState { enabled: true, muted: true, ..Default::default() };
+        let m = Mixer {
+            mic: SourceState { enabled: true, muted: true, ..Default::default() },
+            ..Default::default()
+        };
         let samples = BTreeMap::new();
         let (out, vu) = m.mix(&samples, Some(&[0.5, 0.5]));
         assert_eq!(out, vec![0.0, 0.0]);
