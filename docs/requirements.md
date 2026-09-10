@@ -110,7 +110,7 @@ GStreamer + PipeWire + WebKitGTK を提供するため同梱しない。
 | `h264_vulkan` | `vulkanh264enc` | 手動選択のみ (自動では選ばない) |
 | `libx264` | `x264enc`, `openh264enc` | ソフトウェアフォールバック (要素が存在する場合のみ usable。openh264enc は bitrate bit/s) |
 
-共通チューニング (Topaz安全): B-frames 0 / GOP 2秒 / CBR / High profile。x264系に `zerolatency` tuneは使わない (灰色画面不具合)。NVENC は `preset=high-performance` を使い、`Low Latency` preset は禁止 (灰色画面不具合)。`vulkan` は手動選択のみ。
+共通チューニング (Topaz安全): B-frames 0 / GOP 2秒 / CBR / High profile。x264系に `zerolatency` tuneは使わない (灰色画面不具合)。NVENC は `preset=hp` (High Performance) を使い、`Low Latency` preset は禁止 (灰色画面不具合)。`vulkan` は手動選択のみ。
 
 ---
 
@@ -326,7 +326,7 @@ PipeWire のリモートfdを直接受けて BGRA フレーム化する。アプ
 | HWエンコーダなし | 高負荷 | x264フォールバック + 低画質自動提案 |
 | MSVCランタイムのDLL地獄 | 起動失敗 | `ensure_bundled_runtime` で同梱優先+フォールバック、起動時probeで不在を検出して赤表示 |
 | FlatpakのPipeWire権限不足 | Linuxで音声が取れない | manifestに `--filesystem=xdg-run/pipewire-0` を指定。実機E2Eで確認 |
-| `zerolatency`系の灰色画面 | 視聴不可 | 全エンコーダでB-frames 0/GOP固定/CBRを明示し、tune系は使わない。NVENCは `high-performance` |
+| `zerolatency`系の灰色画面 | 視聴不可 | 全エンコーダでB-frames 0/GOP固定/CBRを明示し、tune系は使わない。NVENCは `hp` (High Performance) |
 
 ---
 

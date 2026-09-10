@@ -18,7 +18,7 @@
 
 | 分類 | 内容 |
 |---|---|
-| エンコーダ | NVENC preset を要件準拠 `high-performance` に (Low Latency禁止)。`profile=high`/`rc-lookahead=0`/`zerolatency=false`。x264 に `pass=cbr`/`profile=high`。openh264enc は bitrate を bps、GOP を `gop-size` で要素別に解決 |
+| エンコーダ | NVENC preset を要件準拠 `hp` (High Performance) に (Low Latency禁止)。`profile=high`/`rc-lookahead=0`/`zerolatency=false`。x264 に `pass=cbr`/`profile=high`。openh264enc は bitrate を bps、GOP を `gop-size` で要素別に解決 |
 | A/V同期 | 映像PTSの固定増分を廃止し appsrc `do-timestamp` (pacerのtick落ちで恒久ズレしない) |
 | メモリ | appsrc を `leaky-type=downstream` + `max-buffers` で bounded 化 |
 | 永続化 | 画面/音声/プロファイル/Encoder/Ingest/Key/ロケール/カーソルを400ms debounceで自動保存・起動時復元 (F-CF-02/05) |
@@ -31,7 +31,7 @@
 
 | 検証 | 方法 | 結果 |
 |---|---|---|
-| core テスト | `cargo test -p ezstreamer-core` | 58/58 |
+| core テスト | `cargo test -p ezstreamer-core` | 69/69 |
 | フロント | `pnpm build` / `pnpm test` | OK (tsc strict / vitest 14) |
 | Windows check + backend test | CI (`windows-latest` + GStreamer MSVC) | PR #15 で green |
 | Linux check + backend test | CI (`ubuntu-24.04` + GStreamer/PipeWire) | PR #15 で green |
@@ -44,8 +44,8 @@
    `ffprobe rtspt://topaz.chat/live/<key>`。問題時は `%APPDATA%\ezStreamer\logs\ezStreamer-*.log`
 2. **Linux/Flatpak 実機 E2E** (AC-12): Portalピッカー → 音声 (system/apps/mic) → 配信 →
    `ffprobe`。音声は native PipeWire 権限の確認を含む
-3. **HWエンコーダ実機調整**: `nvh264enc` の `high-performance` 動作とプロパティ名、
-   QSV/AMF の低遅延挙動を Windows 実機で確定 (`has_property` ガードのため起動はする)
+3. **HWエンコーダ実機調整**: NVENC preset は `hp` に修正済み (PR #20。未知名は panic せず
+   warn スキップ)。QSV/AMF の低遅延挙動を Windows 実機で確定
 4. 小口: F-EN-06 詳細引数欄 (design §15でMVP見送り) / Windowsの `list_audio_devices` が
    既定レンダー端点のセッションのみ列挙する点 / `src-tauri` の lib/bin 二重定義整理
 5. `cargo fmt --check` / clippy のCI強制 (現状未強制。リポジトリ全体の整形を伴う別 chore PR 推奨)

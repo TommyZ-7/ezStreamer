@@ -14,7 +14,7 @@
 - **Windows + Linux:** `cfg(windows)` はWGC+WASAPI、`cfg(target_os = "linux")` はPortal ScreenCast + PipeWire。それ以外のホストはstub。非対応ホストでも `cargo test` / `cargo check` / `pnpm build` が通る
 - **GStreamerはプロセス内:** sidecarプロセス・named pipe・stderrパース廃止。Rustキャプチャ → `appsrc` 2本 → エンコード → `flvmux` → `rtmp2sink`
 - **フレーム供給はRustが司る:** WGC/Portalはコンテンツ変化時のみフレームを出す。Rust側で「最終フレームのfps複製送出」と「プロファイル解像度への正規化」を行い、`appsrc` のcapsを起動中不変に保つ(§3.1.3)
-- **x264 `zerolatency` / NVENC `Low Latency` 禁止:** Topaz灰色画面の既知不具合。tune系は使わず B-frames 0 / GOP 2s / CBR を明示し、NVENCは `preset=high-performance` を使う
+- **x264 `zerolatency` / NVENC `Low Latency` 禁止:** Topaz灰色画面の既知不具合。tune系は使わず B-frames 0 / GOP 2s / CBR を明示し、NVENCは `preset=hp` (High Performance) を使う
 
 ---
 
@@ -165,7 +165,7 @@ flvmux name=mux streamable=true → rtmp2sink location=rtmp://…/{key}
 
 | 要素 | プロパティ |
 |---|---|
-| NVENC系 (`nvh264enc`/`nvenc_h264enc`) | `preset=high-performance rc-mode=cbr bitrate=<v> gop-size=<fps*2> bframes=0 rc-lookahead=0 zerolatency=false` (Low Latency presetは灰色画面のため禁止) |
+| NVENC系 (`nvh264enc`/`nvenc_h264enc`) | `preset=hp rc-mode=cbr bitrate=<v> gop-size=<fps*2> bframes=0 rc-lookahead=0 zerolatency=false` (Low Latency presetは灰色画面のため禁止) |
 | QSV (`qsvh264enc`) / AMF (`amfh264enc`) | `bitrate=<v> gop-size=<fps*2> b-frames=0 rate-control=cbr` |
 | VAAPI 現行 (`vah264enc`) | `bitrate=<v> rate-control=cbr key-int-max=<fps*2> b-frames=0` |
 | VAAPI 旧 (`vaapih264enc`, 1.26で削除) | `bitrate=<v> keyframe-period=<fps*2> bframes=0 rate-control=cbr` |

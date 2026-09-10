@@ -9,15 +9,16 @@
 |---|---|---|
 | 1. 即修正 | NVENC preset（Critical）+ プロパティ適用 panic-safe 化 | ✅ PR #20 マージ済み |
 | 2. 実機 E2E 前 | PipeWire stride / 音声全停止時の無音パディング（High） | ✅ PR #21 マージ済み |
-| 3. 次 PR | retry/stop 競合・プロファイル検証・feeder オーファン・clippy | ❌ 未着手（§3 が計画） |
+| 3. 次 PR | retry/stop 競合・プロファイル検証・feeder オーファン・clippy | ✅ PR #23 マージ済み |
 | 4. 余裕時 | 性能系（コピー削減・staging 再利用・RT 無ロック化等） | ❌ スコープ外 |
-| docs | requirements / impl-report の追随 | ❌ 未着手（§3.9） |
+| docs | requirements / impl-report（+ design.md）の追随 | ✅ 本 PR（docs/review-2026-09-10-followup） |
 
-- main: `92d1d29`（PR #21 merge。PR #20 の `d278185` を含む）
+- main: `976e8a6`（PR #23 merge。`3dda6ba`。PR #20 / #21 を含む）
 - PR #21: <https://github.com/TommyZ-7/ezStreamer/pull/21>
   - 2026-09-10 08:55 UTC に `CI`（changes / windows / linux）+ `Release`（build / flatpak）全緑 → マージ済み
-- 作業 worktree / branch は整理済み（local + remote 削除）
-- 次環境の最初の作業: 更新済み main（`92d1d29`）から §3 を開始
+- PR #23: <https://github.com/TommyZ-7/ezStreamer/pull/23>
+  - 2026-09-10 11:27 UTC に `CI` + `Release` 全緑 → マージ済み（§3.1〜3.8）
+- 作業 branch は PR マージ後に削除（local + remote）
 
 ---
 
@@ -55,7 +56,11 @@ CI（changes / windows / linux）+ Release（build / flatpak）全緑を確認�
 
 ---
 
-## 3. 次 PR フェーズ計画（未着手）
+## 3. 次 PR フェーズ（PR #23 で対応済み）
+
+> 2026-09-10 追記: PR #23（`fix/lifecycle-validation-chore` / `3dda6ba`）で §3.1〜3.8 対応済み。
+> core テストは 69/69。§3.9 の docs 追随のみ別 PR（docs/review-2026-09-10-followup）。
+> 以下は着手前の計画として保持。
 
 branch 例 `fix/lifecycle-validation-chore`、worktree `../ezStreamer-lifecycle`（更新済み main から）。
 ※行番号は PR #21 マージ後の main 時点。
@@ -175,7 +180,7 @@ Ok(proc) => {
 
 ## 6. 現在のリソース
 
-- worktree: `/home/takedatomoya/gh_projects/ezStreamer`（main のみ。作業 worktree は整理済み）
-- branch: `fix/nvenc-preset-panic-safe` / `fix/pre-e2e-robustness` とも local + remote 削除済み
-- PR: #20 / #21 とも merged
-- 未追跡ファイル: `docs/code-review-2026-09-10.md`、本レポート（次環境で必要なら docs PR としてコミット）
+- worktree: main のみ。`ezStreamer-lifecycle`（PR #23）/ `ezStreamer-docs`（本 docs PR）は用済み後 `remove` + `prune`
+- branch: `fix/nvenc-preset-panic-safe` / `fix/pre-e2e-robustness` / `fix/lifecycle-validation-chore` とも local + remote 削除済み
+- PR: #20 / #21 / #23 とも merged
+- 未追跡ファイル: なし（レビュー文書・本レポートは PR #22 で、docs 追随は本 PR でコミット）
