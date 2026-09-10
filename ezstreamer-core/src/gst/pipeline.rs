@@ -145,7 +145,7 @@ impl StreamPlan {
     }
 
     pub fn audio_caps(&self) -> String {
-        "audio/x-raw,format=F32LE,rate=48000,channels=2".to_string()
+        "audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2".to_string()
     }
 }
 
@@ -323,6 +323,6 @@ mod tests {
         let s = build_launch_string(&p);
         assert!(s.contains("width=1280"));
         assert!(s.contains("framerate=30/1"));
-        assert!(s.contains("F32LE,rate=48000"));
+        assert!(s.contains("F32LE,layout=interleaved,rate=48000"));
     }
 }
