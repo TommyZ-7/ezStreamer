@@ -54,7 +54,10 @@ modules:
         CARGO_NET_OFFLINE: "true"
         LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
     build-commands:
-      - cargo --offline build --release --manifest-path src-tauri/Cargo.toml
+      # tauri/custom-protocol is what `tauri build` injects; raw cargo build
+      # without it stays in dev mode (empty embedded assets + devUrl
+      # http://localhost:5173 -> "Could not connect to localhost" on launch).
+      - cargo --offline build --release --manifest-path src-tauri/Cargo.toml --features tauri/custom-protocol
       # NOTE: workspace root owns target/ (not src-tauri/target).
       - install -Dm755 target/release/ezstreamer /app/bin/ezstreamer
       - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.desktop /app/share/applications/app.ezstreamer.desktop.desktop
