@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA) → videoconvert → videoscale → capsfilter
-//!   → queue → videoconvert → <encoder> → h264parse → mux.
+//!   → queue → videoconvert → [vulkanupload] → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
 //!   audioresample → capsfilter → queue → audioconvert → <aacenc> → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
@@ -17,6 +17,11 @@
 //! checks live caps — not just templates — so without the tail converter
 //! the queue→encoder link itself fails (e.g. `vqueue`→`vah264enc`).
 //! When formats already match the converter is a passthrough.
+//!
+//! Vulkan (`vulkanh264enc`) only: `vulkanupload` sits between the tail
+//! videoconvert and the encoder, because the encoder sink is
+//! `video/x-raw(memory:VulkanImage),format=NV12` (verified with GStreamer
+//! 1.28 `gst-inspect` + `gst-launch`).
 //!
 //! Capture stays in Rust (WGC + WASAPI → `VideoSink`/`AudioSink` pumps);
 //! feeder threads move paced frames into the two `appsrc` elements.
@@ -133,6 +138,13 @@ pub fn spawn_pipeline(
     // Tail converter: adapts the pinned BGRA caps to whatever the encoder
     // accepts (see topology note above; e.g. NV12 for vah264enc).
     let v_conv2 = mk("videoconvert", "vconv2")?;
+    // Vulkan encoders consume NV12 VulkanImage memory, not system memory:
+    // `vulkanupload` bridges the tail converter → encoder.
+    let v_upload = if plan.encoder.needs_vulkan_upload() {
+        Some(mk("vulkanupload", "vupload")?)
+    } else {
+        None
+    };
     let encoder = find_encoder(&plan.encoder)
         .ok_or_else(|| format!("no GStreamer element for {}", plan.encoder.id()))?;
     let v_parse = mk("h264parse", "vparse")?;
@@ -152,7 +164,9 @@ pub fn spawn_pipeline(
     let mux = mk("flvmux", "mux")?;
     let sink = mk("rtmp2sink", "sink")?;
 
-    // Caps.
+    // Caps: appsrc and the videoscale capsfilter stay BGRA (FramePacer
+    // output); the tail videoconvert adapts to the encoder (NV12 for
+    // Vulkan/VAAPI) and `vulkanupload` bridges to VulkanImage memory.
     let vcaps = gst::Caps::builder("video/x-raw")
         .field("format", "BGRA")
         .field("width", plan.w as i32)
@@ -201,16 +215,26 @@ pub fn spawn_pipeline(
     mux.set_property("streamable", &true);
     sink.set_property("location", &plan.rtmp_url);
 
+    // Video leg: tail videoconvert always present; `vulkanupload` only for
+    // Vulkan (bridges system memory → VulkanImage). The conditional element
+    // cannot join the static `add_many` list, so it is added separately.
+    let mut video_elems = vec![&v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2];
+    if let Some(ref up) = v_upload {
+        video_elems.push(up);
+    }
+    video_elems.extend([&encoder, &v_parse, &mux]);
     pipeline
         .add_many(&[
             &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2, &encoder, &v_parse, &a_src,
             &a_conv, &a_res, &a_caps, &a_queue, &a_conv2, &aacenc, &a_parse, &mux, &sink,
         ])
         .map_err(|e| format!("pipeline add failed: {e}"))?;
-    gst::Element::link_many(&[
-        &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2, &encoder, &v_parse, &mux,
-    ])
-    .map_err(|e| format!("video link failed: {e:?}"))?;
+    if let Some(ref up) = v_upload {
+        pipeline
+            .add(up)
+            .map_err(|e| format!("pipeline add failed: {e}"))?;
+    }
+    gst::Element::link_many(&video_elems).map_err(|e| format!("video link failed: {e:?}"))?;
     gst::Element::link_many(&[
         &a_src, &a_conv, &a_res, &a_caps, &a_queue, &a_conv2, &aacenc, &a_parse, &mux,
     ])
