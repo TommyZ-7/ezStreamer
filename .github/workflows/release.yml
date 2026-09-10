@@ -117,14 +117,31 @@ jobs:
             if (Copy-PluginForElement $e) { Write-Host "  $e OK" }
             else { $missingElements += $e }
           }
-          # x264 alternative + HW encoders: stage all the runtime provides
-          # (probe_encoders exposes present ones as usable). vulkanupload is
+          # x264 alternative + runtime-conditional elements. vulkanupload is
           # required by the Vulkan video leg (queue → vulkanupload → enc) and
           # lives in the same libgstvulkan as the encoder — staged explicitly
-          # so a future split never drops it silently.
-          foreach ($e in @("openh264enc","nvh264enc","qsvh264enc","amfh264enc","vah264enc","vaapih264enc","vulkanh264enc","vulkanupload")) {
+          # so a future split never drops it silently. (The official Windows
+          # runtime does not build gstvulkan, so these stay absent in bundles.)
+          foreach ($e in @("openh264enc","vah264enc","vaapih264enc","vulkanh264enc","vulkanupload")) {
             if (Copy-PluginForElement $e) { Write-Host "  $e OK (optional)" }
             else { Write-Host "  NOTE: full runtime lacks optional element: $e" }
+          }
+          # GPU-conditional HW encoders (nvcodec/qsv/amfcodec) register their
+          # elements only when the matching device is present at scan time
+          # (NVIDIA CUDA / Intel GPU / AMD GPU). The CI runner has none, so
+          # `gst-inspect` cannot see them — an element-based copy silently
+          # omitted their plugin DLLs from every bundle up to preview.07
+          # (users saw "GStreamer plugin not installed" for all HW encoders).
+          # Copy the plugin files by name instead: they load harmlessly and
+          # register nothing on machines without that hardware. Their bin/
+          # dependencies (gstcuda/gstd3d11/gstd3d12/gstgl/...) are part of the
+          # wholesale bin/*.dll closure staged above.
+          foreach ($p in @("gstnvcodec","gstqsv","gstamfcodec")) {
+            $src = "$gst/lib/gstreamer-1.0/$p.dll"
+            if (Test-Path $src) {
+              Copy-Item $src $plugindir -Force | Out-Null
+              Write-Host "  $p.dll OK (HW, file-based)"
+            } else { Write-Host "NOTE: full runtime lacks optional plugin file: $p.dll" }
           }
           # AAC encoders: need at least one (find_aacenc tries in this order).
           $haveAac = $false

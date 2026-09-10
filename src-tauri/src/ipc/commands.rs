@@ -168,6 +168,15 @@ pub fn probe_encoders(app: tauri::AppHandle) -> CmdResult<Vec<EncoderInfo>> {
         }
         let mut infos =
             ezstreamer_core::gst::probe_with(|e| super::gst_stream::has_element(e));
+        // Diagnosis for "only libx264 usable" reports: record what the
+        // registry actually exposes (bundle missing plugin files vs. no
+        // matching hardware, which registers nothing).
+        let usable: Vec<&str> = infos
+            .iter()
+            .filter(|i| i.usable)
+            .map(|i| i.name.as_str())
+            .collect();
+        crate::logging::info(&format!("probe_encoders: usable=[{}]", usable.join(", ")));
         // UI order: manual list (auto handled client-side).
         infos.sort_by_key(|i| {
             ezstreamer_core::gst::MANUAL_ENCODERS
