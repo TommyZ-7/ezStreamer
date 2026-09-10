@@ -278,13 +278,17 @@ pub fn spawn_pipeline(
         gst::PadProbeReturn::Ok
     });
 
-    // Feeders: paced pump channels → appsrc buffers. PTS is left unset so
-    // appsrc stamps each buffer with the pipeline running time.
+    // Feeders: paced pump channels → appsrc buffers. They wait for PLAYING:
+    // `do-timestamp` stamps buffers with the pipeline running time only once
+    // the clock is distributed, so pre-PLAYING pushes would reach the muxer
+    // without a timestamp. Both streams then share one timebase.
     let vf = video_frames.clone();
     let stop_v = stop.clone();
+    let pipeline_v = pipeline.clone();
     std::thread::Builder::new()
         .name("gst-video-feed".into())
         .spawn(move || {
+            wait_for_playing(&pipeline_v, &stop_v);
             while !stop_v.load(Ordering::Relaxed) {
                 match video_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(frame) => {
@@ -305,9 +309,11 @@ pub fn spawn_pipeline(
         .map_err(|e| format!("video feeder spawn: {e}"))?;
 
     let stop_a = stop.clone();
+    let pipeline_a = pipeline.clone();
     std::thread::Builder::new()
         .name("gst-audio-feed".into())
         .spawn(move || {
+            wait_for_playing(&pipeline_a, &stop_a);
             while !stop_a.load(Ordering::Relaxed) {
                 match audio_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(block) => {
@@ -328,18 +334,33 @@ pub fn spawn_pipeline(
         .map_err(|e| format!("audio feeder spawn: {e}"))?;
 
     // Bus supervisor: ERROR/EOS ends the run (F-ST-04 retry in commands);
-    // user stop sends EOS and drains.
+    // user stop sends EOS and drains, with a hard deadline so a dead RTMP
+    // connection cannot block `stop()` (and the Tauri command) forever.
     let bus = pipeline.bus().ok_or("pipeline has no bus")?;
     let done_t = done.clone();
     let stop_t = stop.clone();
     let handle = std::thread::Builder::new()
         .name("gst-bus".into())
         .spawn(move || {
-            let mut ok = false;
+            let ok: bool;
+            let mut eos_deadline: Option<Instant> = None;
             let _ = pipeline.set_state(gst::State::Playing);
             loop {
                 if stop_t.load(Ordering::Relaxed) {
-                    let _ = pipeline.send_event(gst::event::Eos::new());
+                    match eos_deadline {
+                        None => {
+                            let _ = pipeline.send_event(gst::event::Eos::new());
+                            eos_deadline = Some(Instant::now() + std::time::Duration::from_secs(3));
+                        }
+                        Some(deadline) if Instant::now() >= deadline => {
+                            let msg = "gst stop: EOS not observed within 3s, forcing shutdown";
+                            crate::logging::error(msg);
+                            eprintln!("{msg}");
+                            ok = true; // user-requested stop: not a stream failure
+                            break;
+                        }
+                        Some(_) => {}
+                    }
                 }
                 match bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
                     None => continue,
@@ -365,6 +386,9 @@ pub fn spawn_pipeline(
                 }
             }
             let _ = pipeline.set_state(gst::State::Null);
+            // Releases feeder threads still waiting for PLAYING after an
+            // abnormal exit (the pipeline will never reach it).
+            stop_t.store(true, Ordering::Relaxed);
             *done_t.lock().unwrap() = Some(ok);
         })
         .map_err(|e| format!("bus thread spawn: {e}"))?;
@@ -389,6 +413,15 @@ pub fn spawn_pipeline(
         stop,
         handle: Some(handle),
     })
+}
+
+/// Block the calling feeder until the pipeline is PLAYING (or stopping).
+/// Live sources only produce data in PLAYING, when the clock is distributed.
+fn wait_for_playing(pipeline: &gstreamer::Pipeline, stop: &AtomicBool) {
+    use gstreamer::prelude::*;
+    while !stop.load(Ordering::Relaxed) && pipeline.current_state() < gstreamer::State::Playing {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// First available encoder element for the spec, or None.

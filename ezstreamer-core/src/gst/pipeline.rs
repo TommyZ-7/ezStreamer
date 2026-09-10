@@ -103,50 +103,37 @@ impl EncoderSpec {
                 ("bitrate".into(), bitrate),
                 ("gop-size".into(), gop),
                 ("bframes".into(), "0".into()),
-                ("profile".into(), "high".into()),
                 // Booth low-latency tuning: look-ahead OFF, zerolatency off.
                 ("rc-lookahead".into(), "0".into()),
                 ("zerolatency".into(), "false".into()),
             ],
-            Self::Qsv => vec![
+            // `b-frames` (hyphenated): `bframes` does not exist on
+            // qsvh264enc/amfh264enc and was silently dropped by the
+            // `has_property` guard.
+            Self::Qsv | Self::Amf => vec![
                 ("bitrate".into(), bitrate),
                 ("gop-size".into(), gop),
-                ("bframes".into(), "0".into()),
+                ("b-frames".into(), "0".into()),
                 ("rate-control".into(), "cbr".into()),
-                ("profile".into(), "high".into()),
             ],
-            Self::Amf => vec![
-                ("bitrate".into(), bitrate),
-                ("gop-size".into(), gop),
-                ("bframes".into(), "0".into()),
-                ("rate-control".into(), "cbr".into()),
-                ("profile".into(), "high".into()),
-            ],
+            // Current `vah264enc` (1.28) uses the canonical names. The removed
+            // `vaapih264enc` dialect is handled in `gst_props_for` below.
             Self::Vaapi => vec![
                 ("bitrate".into(), bitrate),
-                // `vah264enc` (1.28) uses hyphenated/canonical names;
-                // legacy `vaapih264enc` uses `keyframe-period`/`bframes`.
-                // `has_property` at build time picks whichever exists.
-                ("key-int-max".into(), gop.clone()),
-                ("keyframe-period".into(), gop),
-                ("b-frames".into(), "0".into()),
-                ("bframes".into(), "0".into()),
                 ("rate-control".into(), "cbr".into()),
-                ("profile".into(), "high".into()),
+                ("key-int-max".into(), gop),
+                ("b-frames".into(), "0".into()),
             ],
             // `vulkanh264enc` sink is NV12 VulkanImage (see topology note).
-            // Verified on GStreamer 1.28.7: no `keyframe-period`/`gop-size`;
-            // GOP is `idr-period`, B-frames `b-frames`, and `rate-control`
-            // defaults to `cqp` so CBR must be set explicitly for `bitrate`
-            // to apply. Legacy aliases are harmless via `has_property`.
+            // It inherits `idr-period`/`b-frames` from `GstH264Encoder`
+            // (GStreamer 1.28, not listed on the element doc page); it has no
+            // `keyframe-period`/`gop-size`. `rate-control` defaults to `cqp`,
+            // so CBR must be set explicitly for `bitrate` to apply.
             Self::Vulkan => vec![
                 ("bitrate".into(), bitrate),
                 ("rate-control".into(), "cbr".into()),
-                ("idr-period".into(), gop.clone()),
-                ("keyframe-period".into(), gop),
+                ("idr-period".into(), gop),
                 ("b-frames".into(), "0".into()),
-                ("bframes".into(), "0".into()),
-                ("profile".into(), "high".into()),
             ],
             // x264enc takes kbit/s; tune zerolatency is BANNED (Topaz gray-screen
             // regression) — use sliced-threads/sync-lookahead/scene-cut off only.
@@ -156,7 +143,6 @@ impl EncoderSpec {
                 ("bframes".into(), "0".into()),
                 ("cabac".into(), "true".into()),
                 ("pass".into(), "cbr".into()),
-                ("profile".into(), "high".into()),
                 (
                     "option-string".into(),
                     "sliced-threads=1:sync-lookahead=0:scenecut=0".into(),
@@ -166,21 +152,34 @@ impl EncoderSpec {
     }
 
     /// Encoder properties for a concrete element factory. The generic set
-    /// above targets the primary element of each spec; the `openh264enc`
-    /// fallback needs different names and units (bitrate is **bits/s** there,
-    /// not kbit/s) or it would encode at ~1.5kbps and ignore the 2s GOP.
+    /// above targets the primary element of each spec; dialects with
+    /// different names/units are mapped here so `build_launch_string` stays
+    /// runnable with `gst-launch-1.0` and the runtime `has_property` guard
+    /// only skips genuinely absent extras:
+    ///
+    /// - `openh264enc`: bitrate is **bits/s** (not kbit/s) and the GOP
+    ///   property is `gop-size` (feeding x264enc's kbit/s value there gave
+    ///   ~1.5 kbps).
+    /// - `vaapih264enc` (removed in GStreamer 1.26): `keyframe-period`/`bframes`.
+    ///
+    /// NOTE: none of the H.264 encoders in use exposes a `profile` property
+    /// (it is a caps field, not an element property), so profiles are left to
+    /// the encoder defaults negotiated by caps.
     pub fn gst_props_for(self, element: &str, profile: &Profile) -> Vec<(String, String)> {
-        if self == Self::X264 && element == "openh264enc" {
-            let mut props = vec![
+        match (self, element) {
+            (Self::X264, "openh264enc") => vec![
                 ("bitrate".into(), (profile.v_kbps * 1000).to_string()),
                 ("rate-control".into(), "bitrate".into()),
                 ("gop-size".into(), profile.gop().to_string()),
-            ];
-            // openh264 only has baseline/main profiles; only set when present.
-            props.push(("profile".into(), "main".into()));
-            return props;
+            ],
+            (Self::Vaapi, "vaapih264enc") => vec![
+                ("bitrate".into(), profile.v_kbps.to_string()),
+                ("keyframe-period".into(), profile.gop().to_string()),
+                ("bframes".into(), "0".into()),
+                ("rate-control".into(), "cbr".into()),
+            ],
+            _ => self.gst_props(profile),
         }
-        self.gst_props(profile)
     }
 }
 
@@ -422,7 +421,6 @@ mod tests {
         // Requirements §2.2: "Low Latency" preset is forbidden (gray screen).
         assert_eq!(get("preset"), Some("high-performance"));
         assert_ne!(get("preset"), Some("low-latency"));
-        assert_eq!(get("profile"), Some("high"));
         assert_eq!(get("rc-lookahead"), Some("0"));
         assert_eq!(get("zerolatency"), Some("false"));
     }
@@ -442,6 +440,61 @@ mod tests {
         let x264 = EncoderSpec::X264.gst_props_for("x264enc", &mid());
         assert!(x264.iter().any(|(k, v)| k == "bitrate" && v == "1500"));
         assert!(x264.iter().any(|(k, _)| k == "pass"));
+    }
+
+    #[test]
+    fn qsv_and_amf_use_hyphenated_b_frames() {
+        // Regression: `bframes` is not a qsvh264enc/amfh264enc property and
+        // was silently dropped by `has_property` (official docs: `b-frames`).
+        for (spec, element) in [(EncoderSpec::Qsv, "qsvh264enc"), (EncoderSpec::Amf, "amfh264enc")] {
+            let props = spec.gst_props_for(element, &mid());
+            let get = |k: &str| props.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+            assert_eq!(get("b-frames"), Some("0"), "{element}");
+            assert_eq!(get("bframes"), None, "{element} has no bframes property");
+            assert_eq!(get("rate-control"), Some("cbr"), "{element}");
+        }
+    }
+
+    #[test]
+    fn vaapi_legacy_element_gets_legacy_dialect() {
+        // `vaapih264enc` (removed in 1.26) uses keyframe-period/bframes;
+        // `has_property` lets the same plan run on old and new runtimes.
+        let legacy = EncoderSpec::Vaapi.gst_props_for("vaapih264enc", &mid());
+        let get = |k: &str| legacy.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("keyframe-period"), Some("60"));
+        assert_eq!(get("bframes"), Some("0"));
+        assert_eq!(get("key-int-max"), None);
+        let modern = EncoderSpec::Vaapi.gst_props_for("vah264enc", &mid());
+        let get = |k: &str| modern.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("key-int-max"), Some("60"));
+        assert_eq!(get("b-frames"), Some("0"));
+        assert_eq!(get("keyframe-period"), None);
+    }
+
+    #[test]
+    fn launch_string_props_are_valid_for_the_named_element() {
+        // `keyframe-period`/`bframes` only exist on the removed vaapih264enc;
+        // QSV/AMF/VAAPI/Vulkan must not emit them.
+        for id in ["h264_qsv", "h264_amf", "h264_vaapi", "h264_vulkan"] {
+            let p = build_plan(&mid(), id, &[], "rtmp://topaz.chat/live", "k123", None).unwrap();
+            let s = build_launch_string(&p);
+            assert!(!s.contains("keyframe-period"), "{id}: {s}");
+            assert!(!s.contains("bframes="), "{id}: {s}");
+            assert!(s.contains("b-frames=0"), "{id}: {s}");
+        }
+        // No GStreamer H.264 encoder exposes `profile` as a property (it is a
+        // caps field): pinning it here would break gst-launch.
+        for id in ["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_vaapi", "h264_vulkan"] {
+            let p = build_plan(&mid(), id, &[], "rtmp://topaz.chat/live", "k123", None).unwrap();
+            let s = build_launch_string(&p);
+            assert!(!s.contains("profile="), "{id}: {s}");
+        }
+        let p = build_plan(&mid(), "h264_vulkan", &[], "rtmp://topaz.chat/live", "k123", None).unwrap();
+        let s = build_launch_string(&p);
+        assert!(s.contains("idr-period=60"), "{s}");
+        let p = build_plan(&mid(), "h264_vaapi", &[], "rtmp://topaz.chat/live", "k123", None).unwrap();
+        let s = build_launch_string(&p);
+        assert!(s.contains("key-int-max=60"), "{s}");
     }
 
     #[test]
