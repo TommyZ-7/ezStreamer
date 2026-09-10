@@ -108,7 +108,7 @@ GStreamer + PipeWire + WebKitGTK を提供するため同梱しない。
 | `h264_amf` | `amfh264enc` | |
 | `h264_vaapi` | `vah264enc`, `vaapih264enc` | Windowsでは通常不可 (UI parityのため残す) |
 | `h264_vulkan` | `vulkanh264enc` | 手動選択のみ (自動では選ばない) |
-| `libx264` | `x264enc`, `openh264enc` | ソフトウェアフォールバック (常時利用可扱い) |
+| `libx264` | `x264enc`, `openh264enc` | ソフトウェアフォールバック (要素が存在する場合のみ usable。openh264enc は bitrate bit/s) |
 
 共通チューニング (Topaz安全): B-frames 0 / GOP 2秒 / CBR / High profile。x264系に `zerolatency` tuneは使わない (灰色画面不具合)。NVENC は `preset=high-performance` を使い、`Low Latency` preset は禁止 (灰色画面不具合)。`vulkan` は手動選択のみ。
 
