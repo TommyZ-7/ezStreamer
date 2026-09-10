@@ -143,9 +143,9 @@ WGCはフレームをコンテンツ変化時にのみ供給し、かつソー�
 ### 4.1 方針
 
 - **GStreamerの責務はエンコード + 多重化 + RTMP送信のみ。** キャプチャ・ミキシングはRustが担う
-- **供給は `appsrc` 2本** (映像 `BGRA` / 音声 `F32LE 48k stereo`)。`appsrc` は `is-live=true, format=time, do-timestamp=true`。**PTSはappsrcに任せる** (パイプライン running time)。固定増分PTSは FramePacer が遅延時に tick を捨てると実時間から恒久的にズレてA/V非同期になるため使わない
+- **供給は `appsrc` 2本** (映像 `BGRA` / 音声 `F32LE 48k stereo`)。`appsrc` は `is-live=true, format=time, do-timestamp=true`。**PTSはappsrcに任せる** (パイプライン running time)。固定増分PTSは FramePacer が遅延時に tick を捨てると実時間から恒久的にズレてA/V非同期になるため使わない。feederはpipelineがPLAYING (クロック配布完了) になるまでpushしない (PLAYING前のpushは無タイムスタンプになりflvmuxが補完するため)
 - **バックプレッシャ:** `appsrc` は `leaky-type=downstream` + `max-buffers` (映像4 / 音声50) で bounded。既定の `block=false` のままではネットワーク詰まり時に内部キューが無制限に伸びる (`max-bytes=0` = 個数で制限)
-- **bus監視:** `ERROR`/`EOS` をsupervisorスレッドが受け、F-ST-04リトライへ (§9)。ERROR/EOS・リトライ・キャプチャ失敗は `logs/` に記録 (§7)
+- **bus監視:** `ERROR`/`EOS` をsupervisorスレッドが受け、F-ST-04リトライへ (§9)。ユーザー停止はEOS送信→最大3秒で強制shutdown (RTMP切断時にUIがブロックしない)。ERROR/EOS・リトライ・キャプチャ失敗は `logs/` に記録 (§7)
 - **ビットレート計測:** `flvmux` の src pad probe でエンコード後のバイト数をカウント (入力のBGRA/F32を数えると実レートの約10倍になる)
 
 ### 4.2 パイプライン構成
@@ -156,21 +156,26 @@ audio_src(appsrc) → audioconvert → audioresample → capsfilter(48k/2ch) →
 flvmux name=mux streamable=true → rtmp2sink location=rtmp://…/{key}
 ```
 
-- `<encoder>`: §8.1の解決結果 (例 `nvh264enc`)。`<aacenc>`: `voaacenc` 優先、無ければ `avenc_aac`
-- `gst-launch` 等価文字列は `ezstreamer-core::gst::build_launch_string` が生成 (デバッグ/E2E用。アプリは要素APIで構築)
+- `<encoder>`: §8.1の解決結果 (例 `nvh264enc`)。`<aacenc>`: `voaacenc` → `avenc_aac` → `mfaacenc` → `faac` → `fdkaacenc` の順で最初に存在する要素
+- `queue`後のtail converterは必須: capsfilterがBGRA/F32LEを固定する一方、エンコーダのsink Capsは狭い (`vah264enc`はNV12、`voaacenc`/`fdkaacenc`/`mfaacenc`はS16LE等)。リンクはlive capsで判定されるため、これが無いとqueue→エンコーダのリンク自体が失敗する
+- Vulkan (`vulkanh264enc`) のみ `vulkanupload` がtail videoconvertとエンコーダの間に入る (sinkが `video/x-raw(memory:VulkanImage),format=NV12` のため。GStreamer 1.28の公式例と同じ構成)
+- `gst-launch` 等価文字列は `ezstreamer-core::gst::build_launch_string` が生成 (デバッグ/E2E用。アプリは要素APIで構築)。プロパティは解決済み要素 (例 `vah264enc`) に有効な名前だけを出力する
 
 ### 4.3 エンコーダプロパティ (Topaz安全・§4.3)
 
 | 要素 | プロパティ |
 |---|---|
-| NVENC系 | `preset=high-performance rc-mode=cbr bitrate=<v> gop-size=<fps*2> bframes=0 profile=high rc-lookahead=0 zerolatency=false` (Low Latency presetは灰色画面のため禁止) |
-| QSV/AMF | `bitrate=<v> gop-size=<fps*2> bframes=0 rate-control=cbr profile=high` 系 |
-| VAAPI/Vulkan | `bitrate=<v> keyframe-period/idr-period=<fps*2> bframes=0 profile=high` |
-| x264enc | `bitrate=<v> key-int-max=<fps*2> bframes=0 pass=cbr cabac=true profile=high option-string=sliced-threads=1:sync-lookahead=0:scenecut=0` (`zerolatency`禁止) |
-| openh264enc | `bitrate=<v*1000>` (**bit/s**), `rate-control=bitrate`, `gop-size=<fps*2>` (`x264enc`不在時のフォールバック。要素別に単位/名前を解決する) |
+| NVENC系 (`nvh264enc`/`nvenc_h264enc`) | `preset=high-performance rc-mode=cbr bitrate=<v> gop-size=<fps*2> bframes=0 rc-lookahead=0 zerolatency=false` (Low Latency presetは灰色画面のため禁止) |
+| QSV (`qsvh264enc`) / AMF (`amfh264enc`) | `bitrate=<v> gop-size=<fps*2> b-frames=0 rate-control=cbr` |
+| VAAPI 現行 (`vah264enc`) | `bitrate=<v> rate-control=cbr key-int-max=<fps*2> b-frames=0` |
+| VAAPI 旧 (`vaapih264enc`, 1.26で削除) | `bitrate=<v> keyframe-period=<fps*2> bframes=0 rate-control=cbr` |
+| Vulkan (`vulkanh264enc`) | `bitrate=<v> rate-control=cbr idr-period=<fps*2> b-frames=0` (`idr-period`/`b-frames` は基底 `GstH264Encoder` 提供。要素ページ非掲載) |
+| x264 (`x264enc`) | `bitrate=<v> key-int-max=<fps*2> bframes=0 pass=cbr cabac=true option-string=sliced-threads=1:sync-lookahead=0:scenecut=0` (`zerolatency`禁止) |
+| openh264 (`openh264enc`, x264不在時) | `bitrate=<v*1000>` (**bit/s**), `rate-control=bitrate`, `gop-size=<fps*2>` (要素別に単位/名前を解決する) |
 
 - **GOP:** `fps*2` で2秒固定 (`F-EN-05`)
 - **上限ガード:** `F-EN-04` で `v_kbps>2000` or `a_kbps>320` はパイプライン構築前に `Err(OverBitrate)` を返しUIで赤表示
+- **要素別プロパティ:** `EncoderSpec::gst_props_for(element, profile)` が解決済み要素に有効な名前だけを返し、`build_launch_string` も実行時 (`encoder.factory()` で解決) も同じ関数を使う。`profile=high` はどのH.264エンコーダにも存在しないプロパティ (caps項目) のため設定しない。プロファイルはエンコーダ既定 + caps交渉に委ねる
 - プロパティは存在確認 (`has_property`) してから設定。ランタイム差異で欠ける物があっても起動する
 
 ### 4.4 ランタイム解決
@@ -260,6 +265,7 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 
 - **自動:** 上記順。`vulkan` は自動では選ばない
 - **手動:** UIで `auto` 以外を選んだ場合はレジストリ有無に関わらず要求し、要素不在なら起動時エラー+UI赤表示
+- WindowsのHWエンコーダプラグインはデバイス検出時のみ要素登録する (1.28ソース確認: `nvcodec`はCUDAデバイス必須、`qsv`はIntel GPU必須、`amfcodec`はAMD GPU必須)。そのためレジストリlookupは実質の能力判定として機能する
 - `libx264` は `x264enc`/`openh264enc` が存在する場合のみ usable (v0.2修正)。`libx264` は要素別に bitrate 単位を解決する (§4.3 openh264enc)
 
 ---
@@ -277,7 +283,7 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 | StreamKey空/不正 | `key` の文字種/長さ/IngestURLを `build_plan` でも検証 | インライン赤 |
 
 - **ログ:** busメッセージ・リトライ・feeder/キャプチャ異常を `logs/ezStreamer-YYYY-MM-DD.log` に追記 (10MBローテーション)
-- **プロセス後始末:** プロセス内パイプラインのためゾンビなし。`stop` は EOS送信→drain→`Null`。アプリ終了時は `RunEvent::ExitRequested` で停止処理を実行 (v0.2実装)
+- **プロセス後始末:** プロセス内パイプラインのためゾンビなし。`stop` は EOS送信→drain→`Null`。EOSが3秒観測できなければ強制`Null` (RTMP切断でUIがブロックしない)。アプリ終了時は `RunEvent::ExitRequested` で停止処理を実行 (v0.2実装)
 
 ---
 
@@ -307,7 +313,7 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 ### 12.1 単体
 
 - `config::tests` — JSON roundtrip, 上限ガード, マイグレーション (旧キー互換)
-- `gst::pipeline::tests` — プラン解決, ビットレートガード, launch文字列 (tune禁止表明), GOP
+- `gst::pipeline::tests` — プラン解決, ビットレートガード, launch文字列 (tune禁止表明), GOP, 要素別プロパティ妥当性 (QSV/AMFの`b-frames`、Vulkanの`idr-period`、openh264のbit/s、実在しない`profile`/`bframes`の除外)
 - `gst::probe::tests` — 要素名→UI id対応, 優先順, vulkan手動限定
 - `gst::supervisor::tests` — backoff, ランタイム探索順
 - `audio::mixer::tests` — f32加算, `clamp`, `gain`, VU計算
