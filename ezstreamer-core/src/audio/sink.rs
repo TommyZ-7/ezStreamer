@@ -3,7 +3,9 @@
 //! Capture backends push interleaved stereo f32 blocks tagged by source id
 //! (`MIC_ID` for the microphone). The sink thread mixes what is available
 //! and emits continuously; sources that stop pushing drop out (their device
-//! closed) instead of stalling the stream (design §3.2.3).
+//! closed) instead of stalling the stream (design §3.2.3). When no source
+//! has data at all, silence is emitted so the muxer never starves (review
+//! 2026-09-10).
 
 use super::Mixer;
 use crate::error::{Error, Result};
@@ -20,6 +22,8 @@ use std::time::Duration;
 pub const MIC_ID: &str = "__mic__";
 /// ~10ms of stereo @48kHz
 const BLOCK: usize = 960;
+/// Wall-clock duration of one [`BLOCK`] (interleaved stereo @48kHz).
+const BLOCK_MS: u64 = 10;
 
 #[derive(Clone)]
 pub struct AudioSink {
@@ -92,6 +96,12 @@ impl Drop for AudioSink {
 
 /// Shared mixing pump: mixes queued source blocks and forwards the
 /// interleaved stereo output via `emit`. Returning `false` stops the thread.
+///
+/// When no source has data queued (startup, or every capture thread died),
+/// one block of silence is emitted instead of idling. flvmux is an
+/// aggregator: a starved audio pad stops all output, so without this the
+/// video freezes with no bus ERROR/EOS and F-ST-04 never fires (review
+/// 2026-09-10).
 fn spawn_mixer(
     rx: mpsc::Receiver<(String, Vec<f32>)>,
     stop: Arc<AtomicBool>,
@@ -107,7 +117,7 @@ fn spawn_mixer(
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                match rx.recv_timeout(Duration::from_millis(50)) {
+                match rx.recv_timeout(Duration::from_millis(BLOCK_MS)) {
                     Ok((id, block)) => {
                         auto_register(&mixer, &id);
                         queues.entry(id).or_default().extend(block);
@@ -127,6 +137,14 @@ fn spawn_mixer(
                     .map(|(id, _)| id.clone())
                     .collect();
                 if available.is_empty() {
+                    // Keep the muxer fed with one block of silence so a dead
+                    // capture thread cannot stall flvmux (and with it the
+                    // whole stream). The BLOCK-sized receive timeout above
+                    // paces this at real time.
+                    if !emit(vec![0.0; BLOCK]) {
+                        return; // consumer gone
+                    }
+                    *last_vu.lock().unwrap() = VuMeter::default();
                     continue;
                 }
                 let n = available
@@ -214,11 +232,12 @@ mod tests {
         let mixer = Arc::new(Mutex::new(Mixer::default()));
         let sink = AudioSink::spawn(file, mixer).unwrap();
 
-        sink.push("a", vec![0.5; 960 * 3]);
+        // Two blocks each so the pump cannot drain `a` before `b` arrives
+        // (one block per iteration): the join is mixed, then `b` stops.
+        sink.push("a", vec![0.5; BLOCK * 2]);
+        sink.push("b", vec![0.5; BLOCK * 2]);
         std::thread::sleep(Duration::from_millis(100));
-        sink.push("b", vec![0.5; 960]); // b stops after one block
-        std::thread::sleep(Duration::from_millis(100));
-        sink.push("a", vec![0.5; 960]); // a keeps going → mixed alone afterwards
+        sink.push("a", vec![0.5; BLOCK]); // b stopped; a keeps going alone
         std::thread::sleep(Duration::from_millis(100));
         sink.stop();
 
@@ -231,6 +250,35 @@ mod tests {
             "b dropping out leaves a alone"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn emits_silence_after_all_sources_stop() {
+        // Regression (review 2026-09-10): when every source stops pushing,
+        // the mixer must keep emitting (silence) so flvmux does not stall.
+        let mixer = Arc::new(Mutex::new(Mixer::default()));
+        let (sink, out_rx) = AudioSink::spawn_appsrc(mixer).unwrap();
+        sink.push("a", vec![0.5; BLOCK]);
+
+        let mut saw_signal = false;
+        let mut saw_silence_after = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            match out_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(block) => {
+                    if block.iter().any(|&s| s != 0.0) {
+                        saw_signal = true;
+                    } else if saw_signal {
+                        saw_silence_after = true;
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        sink.stop();
+        assert!(saw_signal, "mixed source block was emitted");
+        assert!(saw_silence_after, "silence keeps flowing after the source stops");
     }
 
     #[test]

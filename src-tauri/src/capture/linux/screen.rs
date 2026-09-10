@@ -10,7 +10,7 @@
 use super::{CaptureError, Result};
 use base64::Engine;
 use ezstreamer_core::config::{Profile, ScreenTarget, ScreenTargetKind};
-use ezstreamer_core::video::{bgra_to_rgba, scale_bgra, VideoSink};
+use ezstreamer_core::video::{bgra_to_rgba, scale_bgra, scale_bgra_strided, VideoSink};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa::param::ParamType;
@@ -256,10 +256,41 @@ pub fn start_screen(
                         return;
                     }
                     let data = &mut datas[0];
+                    // Portal buffers can pad rows (stride > w*4) and start at
+                    // a chunk offset; a packed read shifts every row and
+                    // skews the image (review 2026-09-10). Read both before
+                    // the mutable `data()` borrow below.
+                    let (stride, offset) = {
+                        // `Data::chunk()` asserts non-null; guard first so a
+                        // malformed buffer cannot panic the RT callback.
+                        if data.as_raw().chunk.is_null() {
+                            return;
+                        }
+                        let chunk = data.chunk();
+                        (chunk.stride(), chunk.offset() as usize)
+                    };
                     let size = ud.format.size();
                     let (w, h) = (size.width.max(1), size.height.max(1));
                     if let Some(bytes) = data.data() {
-                        let frame = scale_bgra(bytes, w, h, ud.dst_w, ud.dst_h);
+                        let Some(bytes) = bytes.get(offset..) else {
+                            return;
+                        };
+                        // Non-positive stride is not a valid BGRA layout:
+                        // fall back to the packed w*4 assumption.
+                        let stride = if stride > 0 {
+                            stride as usize
+                        } else {
+                            (w as usize) * 4
+                        };
+                        let Some(frame) =
+                            scale_bgra_strided(bytes, w, h, stride, ud.dst_w, ud.dst_h)
+                        else {
+                            crate::logging::log(
+                                "warn",
+                                "pw video: short buffer (stride/padding mismatch); frame dropped",
+                            );
+                            return;
+                        };
                         ud.sink.push(frame.clone());
                         // park the newest frame for the 1fps preview thread
                         if let Ok(mut slot) = ud.preview_frame.lock() {
