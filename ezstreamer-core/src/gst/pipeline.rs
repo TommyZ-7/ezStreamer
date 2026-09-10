@@ -218,14 +218,20 @@ impl StreamPlan {
     }
 }
 
-/// Resolve encoder id (`auto` or manual) to a spec. `available` lists usable
-/// UI ids from [`crate::gst::probe_encoders`]; `auto` picks priority order.
+/// Resolve encoder id (`auto`, empty/whitespace, or manual) to a spec.
+/// `available` lists usable UI ids from [`crate::gst::probe_encoders`];
+/// `auto` picks priority order.
+///
+/// Empty/whitespace means `auto` too: the backend's usable-list branch
+/// already treated it that way, but `build_plan` used to reject it with
+/// `EncoderNotAvailable("")` (review 2026-09-10, Low #3).
 ///
 /// Manual selection is used as-is (design §8.1): only the id is validated,
 /// registry presence is NOT gated here. A missing element fails later at
 /// pipeline build with an actionable `no GStreamer element for …` message.
 pub fn resolve_encoder(encoder_override: &str, available: &[String]) -> Result<EncoderSpec> {
-    if encoder_override == "auto" {
+    let id = encoder_override.trim();
+    if id.is_empty() || id == "auto" {
         for cand in crate::gst::AUTO_CANDIDATES {
             if available.iter().any(|a| a == cand) {
                 return EncoderSpec::from_id(cand)
@@ -234,8 +240,43 @@ pub fn resolve_encoder(encoder_override: &str, available: &[String]) -> Result<E
         }
         return Ok(EncoderSpec::X264); // software fallback always exists
     }
-    EncoderSpec::from_id(encoder_override)
-        .ok_or_else(|| Error::EncoderNotAvailable(encoder_override.to_string()))
+    EncoderSpec::from_id(id).ok_or_else(|| Error::EncoderNotAvailable(id.to_string()))
+}
+
+/// Common lower bound accepted by every hardware encoder in use
+/// (nvenc 160x64, amf 128x128, qsv 16x16): 160x128.
+const MIN_HW_W: u32 = 160;
+const MIN_HW_H: u32 = 128;
+
+/// Reject unusable profile geometry before a pipeline is built. Without
+/// this, unchecked UI values (fps=0, odd/1px sizes) surfaced as
+/// `not-negotiated` / infinite GOP only after the stream started, then as
+/// three retries before giving up; `Error::Config` is the actionable
+/// failure (review 2026-09-10, Medium).
+fn validate_profile(profile: &Profile) -> Result<()> {
+    if profile.fps < 1 {
+        return Err(Error::Config(format!(
+            "profile fps must be >= 1 (got {})",
+            profile.fps
+        )));
+    }
+    if profile.w == 0
+        || profile.h == 0
+        || !profile.w.is_multiple_of(2)
+        || !profile.h.is_multiple_of(2)
+    {
+        return Err(Error::Config(format!(
+            "profile dimensions must be positive even numbers (got {}x{})",
+            profile.w, profile.h
+        )));
+    }
+    if profile.w < MIN_HW_W || profile.h < MIN_HW_H {
+        return Err(Error::Config(format!(
+            "profile {}x{} is below the minimum encoder size {}x{}",
+            profile.w, profile.h, MIN_HW_W, MIN_HW_H
+        )));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -247,6 +288,7 @@ pub fn build_plan(
     stream_key: &str,
     preferred_element: Option<&str>,
 ) -> Result<StreamPlan> {
+    validate_profile(profile)?;
     validate_bitrate(profile.v_kbps, profile.a_kbps)?;
     let key = stream_key.trim();
     // F-ST-01 full validation (charset + 3..=64) also protects the RTMP URL.
@@ -383,6 +425,45 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::EncoderNotAvailable(_)));
+    }
+
+    #[test]
+    fn empty_or_blank_override_means_auto() {
+        // Review Low #3: `""` used to reach `EncoderSpec::from_id` and fail
+        // with `EncoderNotAvailable("")` while `start_stream` had built the
+        // usable list as if the override were auto.
+        for ov in ["", "   "] {
+            let p = build_plan(&mid(), ov, &avail(), "rtmp://topaz.chat/live", "abc", None)
+                .unwrap();
+            assert_eq!(p.encoder, EncoderSpec::Nvenc, "override {ov:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_profile_geometry_is_rejected_before_gst() {
+        for bad in [
+            Profile { fps: 0, ..mid() },
+            Profile { w: 0, ..mid() },
+            Profile { w: 1279, ..mid() },
+            Profile { h: 721, ..mid() },
+            Profile { w: 159, ..mid() }, // odd and below the HW floor
+            Profile { h: 126, ..mid() }, // even but below the AMF floor
+        ] {
+            let err = build_plan(&bad, "auto", &avail(), "rtmp://topaz.chat/live", "abc", None)
+                .unwrap_err();
+            assert!(matches!(err, Error::Config(_)), "{bad:?} -> {err:?}");
+        }
+        // The common hardware lower bound is accepted.
+        let min = Profile { w: 160, h: 128, ..mid() };
+        assert!(build_plan(&min, "auto", &avail(), "rtmp://topaz.chat/live", "abc", None).is_ok());
+    }
+
+    #[test]
+    fn builtin_profiles_pass_geometry_validation() {
+        for p in crate::config::default_profiles().values() {
+            build_plan(p, "auto", &avail(), "rtmp://topaz.chat/live", "abc", None)
+                .unwrap_or_else(|e| panic!("builtin {}: {e}", p.name));
+        }
     }
 
     #[test]

@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn rejects_size_mismatch() {
         let mut p = pacer();
-        assert!(p.push(&vec![0u8; 15]).is_err());
-        assert!(p.push(&vec![0u8; 17]).is_err());
+        assert!(p.push(&[0u8; 15]).is_err());
+        assert!(p.push(&[0u8; 17]).is_err());
         assert!(!p.has_frame());
     }
 

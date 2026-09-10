@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn white_maps_near_235() {
         let mut src = vec![0u8; 2 * 2 * 4];
-        for px in src.chunks_exact_mut(4) {
+        for px in src.as_chunks_mut::<4>().0.iter_mut() {
             px[0] = 255;
             px[1] = 255;
             px[2] = 255;

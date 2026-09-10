@@ -52,17 +52,11 @@ pub struct AudioSelection {
     pub mic: MicSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AudioMixUpdate {
     pub apps: BTreeMap<String, SourceGain>,
     pub mic: MicUpdate,
-}
-
-impl Default for AudioMixUpdate {
-    fn default() -> Self {
-        Self { apps: BTreeMap::new(), mic: MicUpdate::default() }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]

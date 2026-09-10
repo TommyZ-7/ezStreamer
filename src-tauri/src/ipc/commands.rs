@@ -302,7 +302,11 @@ pub fn start_stream(
 
     #[cfg(any(windows, target_os = "linux"))]
     {
-        let usable: Vec<String> = if cfg.encoder_override == "auto" || cfg.encoder_override.is_empty() {
+        // Normalize once so the usable-list branch, `build_plan` and the log
+        // agree: whitespace-only behaves like "auto" (review Low #3; `""` used
+        // to reach `resolve_encoder` and fail with EncoderNotAvailable("")).
+        let encoder_override = cfg.encoder_override.trim().to_string();
+        let usable: Vec<String> = if encoder_override.is_empty() || encoder_override == "auto" {
             // Auto resolves against registry-present encoders only.
             probe_encoders(app.clone())
                 .map(|infos| infos.into_iter().filter(|i| i.usable).map(|i| i.name).collect())
@@ -312,7 +316,7 @@ pub fn start_stream(
         };
         let plan = gst::build_plan(
             &profile,
-            &cfg.encoder_override,
+            &encoder_override,
             &usable,
             &cfg.ingest_url,
             &cfg.stream_key,
@@ -326,7 +330,7 @@ pub fn start_stream(
             profile.w,
             profile.h,
             profile.fps,
-            cfg.encoder_override,
+            encoder_override,
             cfg.cursor,
             cfg.ingest_url
         ));
@@ -486,8 +490,24 @@ fn spawn_retry_thread(app: tauri::AppHandle, first_retry: u32) {
                 let Some(sess) = state.session.lock().unwrap().clone() else { return };
                 stop_capture_backends(&state);
                 match launch_pipeline(&app, &state, &sess, n) {
-                    Ok(proc) => {
-                        *state.stream.lock().unwrap() = Some(proc);
+                    Ok(mut proc) => {
+                        // Install under the `stream` lock and re-check
+                        // `retrying` inside it: a `stop_stream` that landed
+                        // during the long `launch_pipeline` must win.
+                        // `stop_stream` clears `retrying` before taking
+                        // `stream`, so once this lock is granted either the
+                        // stop is visible (None) or we install. Without this,
+                        // the late install left an invisible live stream
+                        // running until the next stop (review Medium).
+                        // Lock order `stream → retrying` matches `get_status`.
+                        let mut stream = state.stream.lock().unwrap();
+                        if state.retrying.lock().unwrap().is_none() {
+                            drop(stream); // do not hold the lock while stopping
+                            proc.stop();
+                            stop_capture_backends(&state);
+                            return;
+                        }
+                        *stream = Some(proc);
                         *state.retrying.lock().unwrap() = None;
                         crate::logging::info(&format!("stream retry {n}/{MAX_RETRIES}: reconnected"));
                         return;
@@ -591,6 +611,11 @@ pub fn update_audio_mix(state: State<'_, AppState>, mix: AudioMixUpdate) -> CmdR
     }
     if let Some(mixer) = state.active_mixer.lock().unwrap().as_ref() {
         let mut m = mixer.lock().unwrap();
+        // Insert/update only: removing an app here cannot stick while its
+        // capture thread is alive — the next mixed block re-registers it via
+        // `auto_register` (core/src/audio/sink.rs). The UI's add/remove
+        // selection therefore applies on the next stream start; live updates
+        // only carry gain/mute.
         for (id, g) in &mix.apps {
             m.apps.insert(
                 id.clone(),
