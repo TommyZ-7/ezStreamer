@@ -13,6 +13,7 @@
     "tab": "画面",
     "display": "全画面",
     "window": "ウィンドウ",
+    "cursor": "カーソルを表示",
     "portalPicker": "Portalピッカーで選択",
     "notAvailable": "キャプチャ機能はこのビルドでは未対応です"
   },
@@ -22,7 +23,10 @@
     "apps": "アプリ指定",
     "mic": "マイク",
     "gain": "音量",
-    "mute": "ミュート"
+    "mute": "ミュート",
+    "master": "マスター",
+    "noApps": "アプリが検出されませんでした",
+    "liveHint": "配信中はミュート/音量が即時反映されます"
   },
   "profile": {
     "tab": "出力",
@@ -46,6 +50,8 @@
     "copied": "コピーしました",
     "start": "配信開始",
     "stop": "配信停止",
+    "bitrate": "ビットレート",
+    "dropped": "ドロップ",
     "previewStart": "プレビュー開始",
     "previewStop": "プレビュー停止",
     "previewNeedsSource": "画面を選択するとプレビューできます",
@@ -63,6 +69,14 @@
     "vKbps": "映像 kbps",
     "aKbps": "音声 kbps",
     "duplicate": "複製",
-    "delete": "削除"
+    "delete": "削除",
+    "add": "追加",
+    "export": "エクスポート",
+    "import": "インポート",
+    "importLoaded": "読み込みました（保存で確定）",
+    "importError": "読み込み失敗"
+  },
+  "warn": {
+    "topaz1080p": "Topaz上限2000kのため画質が粗くなります。720p推奨"
   }
 }

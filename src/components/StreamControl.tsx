@@ -9,6 +9,7 @@ export function StreamControl() {
   const streamKey = useStore((s) => s.streamKey);
   const ingestUrl = useStore((s) => s.ingestUrl);
   const isLive = useStore((s) => s.isLive);
+  const status = useStore((s) => s.status);
   const backendError = useStore((s) => s.backendError);
   const screenId = useStore((s) => s.screen.id);
   const previewing = useStore((s) => s.previewing);
@@ -22,9 +23,13 @@ export function StreamControl() {
   const keyError = validateStreamKey(streamKey);
   const genericWarn = streamKey.length > 0 && genericKeyWarning(streamKey);
   const [backendMissing, setBackendMissing] = useState(false);
+  // F-ST-04: while a reconnect is pending the stream is neither idle nor
+  // live; the button must cancel it (stop_stream cancels the retry).
+  const retrying = status.retrying != null;
+  const active = isLive || retrying;
 
   const urls = playbackUrls(ingestUrl, streamKey || "your-key");
-  const canStart = !isLive && streamKey.length > 0 && keyError === null && !backendMissing;
+  const canStart = !active && streamKey.length > 0 && keyError === null && !backendMissing;
 
   useEffect(() => {
     // surface the start error once (backend without capture)
@@ -73,20 +78,36 @@ export function StreamControl() {
         <CopyRow label={t("stream.copyQuest")} url={urls.quest} onCopy={() => copy(urls.quest)} />
       </div>
 
+      {isLive && (
+        <div className="flex justify-between text-xs text-zinc-400">
+          <span>
+            {t("stream.bitrate")}: {Math.round(status.bitrateKbps)} kbps
+          </span>
+          <span>
+            {t("stream.dropped")}: {status.droppedFrames}
+          </span>
+        </div>
+      )}
+      {retrying && (
+        <p className="text-center text-xs text-amber-400">
+          {t("stream.retrying", { n: status.retrying })}
+        </p>
+      )}
+
       <button
         className={`w-full rounded py-3 text-lg font-bold ${
-          isLive
+          active
             ? "bg-red-600 hover:bg-red-500 text-white"
             : canStart
               ? "bg-zinc-200 text-zinc-900 hover:bg-white"
               : "cursor-not-allowed bg-zinc-700 text-zinc-500"
         }`}
-        disabled={!canStart && !isLive}
-        onClick={() => (isLive ? void stopStream() : void startStream())}
+        disabled={!canStart && !active}
+        onClick={() => (active ? void stopStream() : void startStream())}
       >
-        {isLive ? `■ ${t("stream.stop")}` : `● ${t("stream.start")}`}
+        {active ? `■ ${t("stream.stop")}` : `● ${t("stream.start")}`}
       </button>
-      {!isLive && (
+      {!active && (
         <button
           className={`w-full rounded border py-2 text-sm ${
             previewing
@@ -101,13 +122,13 @@ export function StreamControl() {
           {previewing ? t("stream.previewStop") : t("stream.previewStart")}
         </button>
       )}
-      {!isLive && !screenId && !previewing && (
+      {!active && !screenId && !previewing && (
         <p className="text-center text-xs text-zinc-500">{t("stream.previewNeedsSource")}</p>
       )}
       {backendMissing && (
         <p className="text-center text-xs text-amber-500">{t("stream.notAvailable")}</p>
       )}
-      {!isLive && backendError && !backendMissing && (
+      {!active && backendError && !backendMissing && (
         <p className="text-center text-xs text-red-400 break-all">{backendError}</p>
       )}
     </section>

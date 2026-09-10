@@ -8,7 +8,10 @@ i18n.use(initReactI18next).init({
     ja: { translation: ja },
     en: { translation: en },
   },
-  lng: navigator.language.toLowerCase().startsWith("ja") ? "ja" : "en",
+  lng:
+    typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("ja")
+      ? "ja"
+      : "en",
   fallbackLng: "en",
   interpolation: { escapeValue: false },
 });

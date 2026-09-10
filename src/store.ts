@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import i18n from "./i18n";
 import { api } from "./lib/api";
 import type {
+  AppMixEntry,
   AudioDevices,
   Display,
   EncoderInfo,
@@ -30,6 +32,12 @@ interface AppState {
   audioMode: "system" | "apps";
   selectedApps: string[];
   mic: MicSource;
+  /** F-SC-04: cursor capture toggle (initial ON, persisted). */
+  cursor: boolean;
+  /** Per-app live gain/mute (F-AU-04; session-only, not persisted). */
+  appMix: Record<string, AppMixEntry>;
+  /** F-CF-05: UI language; persisted to profiles.json. */
+  locale: "ja" | "en";
   profileId: string;
   encoderOverride: string;
   ingestUrl: string;
@@ -57,6 +65,10 @@ interface AppState {
   setAudioMode: (m: "system" | "apps") => void;
   toggleApp: (id: string) => void;
   setMic: (m: Partial<MicSource>) => void;
+  setCursor: (v: boolean) => void;
+  setAppMix: (id: string, patch: Partial<AppMixEntry>) => void;
+  pushMix: () => void;
+  setLocale: (l: "ja" | "en") => void;
   setProfileId: (id: string) => void;
   setEncoderOverride: (e: string) => void;
   setIngestUrl: (u: string) => void;
@@ -94,6 +106,48 @@ function cancelPendingPreviewRestart() {
   }
 }
 
+// F-CF-02: selections, stream key, ingest URL and locale are auto-saved
+// (debounced) so the next launch restores them. Profile list edits go
+// through SettingsModal, which saves explicitly.
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let mixTimer: ReturnType<typeof setTimeout> | null = null;
+
+function configFromState(s: AppState): ProfilesConfig | null {
+  if (!s.profiles) return null;
+  return {
+    ...s.profiles,
+    locale: s.locale,
+    ingestUrl: s.ingestUrl,
+    activeProfile: s.profileId,
+    encoderOverride: s.encoderOverride,
+    lastStreamKey: s.streamKey,
+    lastSources: {
+      screen: s.screen,
+      includeApps: s.selectedApps,
+      mic: s.mic,
+      cursor: s.cursor,
+    },
+  };
+}
+
+function schedulePersist() {
+  if (persistTimer !== null) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    const next = configFromState(useStore.getState());
+    if (!next) return;
+    void api.saveProfiles(next).catch(() => undefined);
+  }, 400);
+}
+
+function scheduleMix() {
+  if (mixTimer !== null) clearTimeout(mixTimer);
+  mixTimer = setTimeout(() => {
+    mixTimer = null;
+    useStore.getState().pushMix();
+  }, 100);
+}
+
 export const useStore = create<AppState>((set, get) => ({
   tab: "screen",
   setTab: (t) => set({ tab: t }),
@@ -108,6 +162,9 @@ export const useStore = create<AppState>((set, get) => ({
   audioMode: "system",
   selectedApps: [],
   mic: { device: "default", enabled: true, muted: false, gain: 1.0 },
+  cursor: true,
+  appMix: {},
+  locale: i18n.language === "ja" ? "ja" : "en",
   profileId: "mid",
   encoderOverride: "auto",
   ingestUrl: "rtmp://topaz.chat/live",
@@ -133,6 +190,15 @@ export const useStore = create<AppState>((set, get) => ({
     const backendError =
       displays.status === "rejected" ? String(displays.reason) : null;
     const cfg = profiles.status === "fulfilled" ? profiles.value : null;
+    // F-CF-05: an explicit saved locale wins; otherwise follow the webview.
+    const savedLocale = cfg?.locale;
+    const locale: "ja" | "en" =
+      savedLocale === "ja" || savedLocale === "en"
+        ? savedLocale
+        : i18n.language === "ja"
+          ? "ja"
+          : "en";
+    void i18n.changeLanguage(locale);
     set({
       displays: displays.status === "fulfilled" ? displays.value : [],
       windows: windows.status === "fulfilled" ? windows.value : [],
@@ -140,6 +206,7 @@ export const useStore = create<AppState>((set, get) => ({
       profiles: cfg,
       backendError,
       booted: true,
+      locale,
       ...(cfg
         ? {
             ingestUrl: cfg.ingestUrl,
@@ -149,6 +216,7 @@ export const useStore = create<AppState>((set, get) => ({
             screen: cfg.lastSources.screen,
             selectedApps: cfg.lastSources.includeApps,
             mic: cfg.lastSources.mic,
+            cursor: cfg.lastSources.cursor ?? true,
             audioMode: cfg.lastSources.includeApps.length > 0 ? "apps" : "system",
           }
         : {}),
@@ -179,6 +247,7 @@ export const useStore = create<AppState>((set, get) => ({
     // Drop the stale frame at once; otherwise the UI keeps showing the
     // previous screen until (or unless) a new frame arrives.
     set(wasPreviewing ? { screen, preview: null } : { screen });
+    schedulePersist();
     if (!wasPreviewing) return;
     const gen = ++previewRestartGen;
     if (previewRestartTimer !== null) {
@@ -198,6 +267,8 @@ export const useStore = create<AppState>((set, get) => ({
           audio: { mode: s.audioMode, apps: s.selectedApps, mic: s.mic },
           profileId: s.profileId,
           encoderOverride: s.encoderOverride,
+          cursor: s.cursor,
+          appMix: s.appMix,
         })
         .then(() => {
           if (gen === previewRestartGen) {
@@ -214,23 +285,74 @@ export const useStore = create<AppState>((set, get) => ({
         });
     }, 250);
   },
-  setAudioMode: (audioMode) => set({ audioMode }),
-  toggleApp: (id) =>
+  setAudioMode: (audioMode) => {
+    set({ audioMode });
+    schedulePersist();
+  },
+  toggleApp: (id) => {
     set((s) => ({
       selectedApps: s.selectedApps.includes(id)
         ? s.selectedApps.filter((a) => a !== id)
         : [...s.selectedApps, id],
-    })),
-  setMic: (m) => set((s) => ({ mic: { ...s.mic, ...m } })),
-  setProfileId: (profileId) => set({ profileId }),
-  setEncoderOverride: (encoderOverride) => set({ encoderOverride }),
-  setIngestUrl: (ingestUrl) => set({ ingestUrl }),
-  setStreamKey: (streamKey) => set({ streamKey }),
-
-  setProfiles: (profiles) => {
-    set({ profiles });
-    void api.saveProfiles(profiles).catch(() => undefined);
+    }));
+    schedulePersist();
   },
+  setMic: (m) => {
+    set((s) => ({ mic: { ...s.mic, ...m } }));
+    schedulePersist();
+    scheduleMix(); // F-AU-03/04: live gain/mute updates
+  },
+  setCursor: (cursor) => {
+    set({ cursor });
+    schedulePersist();
+  },
+  setAppMix: (id, patch) => {
+    set((s) => {
+      const base: AppMixEntry = s.appMix[id] ?? { gain: 1, muted: false };
+      return { appMix: { ...s.appMix, [id]: { ...base, ...patch } } };
+    });
+    scheduleMix();
+  },
+  pushMix: () => {
+    const s = get();
+    if (!s.isLive) return;
+    void api
+      .updateAudioMix({
+        apps: Object.fromEntries(
+          Object.entries(s.appMix).map(([id, m]) => [
+            id,
+            { gain: m.gain, muted: m.muted },
+          ])
+        ),
+        mic: { enabled: s.mic.enabled, muted: s.mic.muted, gain: s.mic.gain },
+      })
+      .catch(() => undefined);
+  },
+  setLocale: (locale) => {
+    void i18n.changeLanguage(locale);
+    set({ locale });
+    schedulePersist();
+  },
+  setProfileId: (profileId) => {
+    set({ profileId });
+    schedulePersist();
+  },
+  setEncoderOverride: (encoderOverride) => {
+    set({ encoderOverride });
+    schedulePersist();
+  },
+  setIngestUrl: (ingestUrl) => {
+    set({ ingestUrl });
+    schedulePersist();
+  },
+  setStreamKey: (streamKey) => {
+    set({ streamKey });
+    schedulePersist();
+  },
+
+  // SettingsModal saves explicitly; keep the in-memory base in sync without
+  // triggering a second write.
+  setProfiles: (profiles) => set({ profiles }),
 
   setPreview: (preview) => set({ preview }),
 
@@ -268,6 +390,8 @@ export const useStore = create<AppState>((set, get) => ({
         audio: { mode: s.audioMode, apps: s.selectedApps, mic: s.mic },
         profileId: s.profileId,
         encoderOverride: s.encoderOverride,
+        cursor: s.cursor,
+        appMix: s.appMix,
       });
       set({ status, isLive: status.isLive, previewing: false });
     } catch (e) {
@@ -294,6 +418,8 @@ export const useStore = create<AppState>((set, get) => ({
         audio: { mode: s.audioMode, apps: s.selectedApps, mic: s.mic },
         profileId: s.profileId,
         encoderOverride: s.encoderOverride,
+        cursor: s.cursor,
+        appMix: s.appMix,
       });
       set({ previewing: true });
     } catch (e) {

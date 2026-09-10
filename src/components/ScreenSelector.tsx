@@ -13,12 +13,14 @@ export function ScreenSelector() {
   const windows = useStore((s) => s.windows);
   const screen = useStore((s) => s.screen);
   const setScreen = useStore((s) => s.setScreen);
+  const cursor = useStore((s) => s.cursor);
+  const setCursor = useStore((s) => s.setCursor);
   const backendError = useStore((s) => s.backendError);
   const preview = useStore((s) => s.preview);
 
   const startPortalPicker = async () => {
     try {
-      const target = await api.startPortalPicker();
+      const target = await api.startPortalPicker(useStore.getState().cursor);
       useStore.getState().setScreen(target);
     } catch (e) {
       // Surface portal failures (e.g. no D-Bus session, user cancelled,
@@ -61,6 +63,16 @@ export function ScreenSelector() {
             onChange={() => setScreen({ type: "window", id: windows[0]?.id ?? screen.id })}
           />
           {t("screen.window")}
+        </label>
+        {/* F-SC-04: initial ON; persisted. On Linux the Portal picker embeds
+            it at pick time, so re-pick after changing it. */}
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={cursor}
+            onChange={(e) => setCursor(e.target.checked)}
+          />
+          {t("screen.cursor")}
         </label>
       </div>
 
