@@ -8,11 +8,16 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA w×h@fps) → videoconvert → videoscale → capsfilter
-//!   → queue → <encoder> → h264parse → mux.
+//!   → queue → videoconvert → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
-//!   audioresample → capsfilter → queue → voaacenc/avenc_aac → aacparse → mux.
+//!   audioresample → capsfilter → queue → audioconvert → voaacenc/avenc_aac → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
 //! ```
+//!
+//! The converters after each `queue` adapt the pinned pacer caps
+//! (BGRA / F32LE) to the encoder's accepted subset (`vah264enc`: NV12;
+//! `faac`/`fdkaacenc`: S16LE). Without them the queue→encoder pad link
+//! itself fails because link checks live caps, not just templates.
 
 use crate::config::{validate_bitrate, Profile};
 use crate::error::{Error, Result};
@@ -221,9 +226,9 @@ pub fn build_launch_string(plan: &StreamPlan) -> String {
         "appsrc name=video_src caps=\"{vcaps}\" is-live=true format=time \
          ! videoconvert ! videoscale \
          ! \"video/x-raw,width={w},height={h},framerate={fps}/1\" \
-         ! queue ! {enc} {props} ! h264parse ! mux. \
+         ! queue ! videoconvert ! {enc} {props} ! h264parse ! mux. \
          appsrc name=audio_src caps=\"{acaps}\" is-live=true format=time \
-         ! audioconvert ! audioresample ! queue ! voaacenc bitrate={abps} ! aacparse ! mux. \
+         ! audioconvert ! audioresample ! queue ! audioconvert ! voaacenc bitrate={abps} ! aacparse ! mux. \
          flvmux name=mux streamable=true \
          ! rtmp2sink location=\"{url}\"",
         vcaps = plan.video_caps(),
