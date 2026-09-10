@@ -1,4 +1,4 @@
-# AGENTS.md — 開発運用ルール (ezStreamer: Windows専用 / GStreamer)
+# AGENTS.md — 開発運用ルール (ezStreamer: Windows + Linux/Flatpak / GStreamer)
 
 ## 1. ブランチ運用
 - `main` 直push禁止。作業は `feat/*`, `fix/*`, `docs/*` 等の feature ブランチで行う。
@@ -14,13 +14,15 @@
 - 新規branchは必ず更新済み `main` から切る (事前に `checkout main && pull` と `status` clean確認)
 
 ## 2. CI 発火条件 (Actions 消費抑制のため分割)
-- `.github/workflows/ci.yml` (軽量: windows check + frontend。runner は `windows-latest` のみ)
+- `.github/workflows/ci.yml` (軽量: backend + frontend。runner は `windows-latest` + `ubuntu-24.04` の2ジョブ)
+  - windows: `cargo test -p ezstreamer-core` + `cargo check/test -p ezstreamer` (GStreamer MSVC) + `pnpm build/test`
+  - linux: `cargo test -p ezstreamer-core` + `cargo check/test -p ezstreamer` (GStreamer + PipeWire) + `pnpm build/test`
   - `pull_request`, `push: branches: [main]`, `workflow_dispatch`
   - `pull_request`・`push` とも docs 系を除外 (`docs/**`, `**.md`, `LICENSE`, `src-tauri/resources/gstreamer/README.txt`)
   - 同一 ref の旧実行は自動キャンセル (`cancel-in-progress: true`)
-- `.github/workflows/release.yml` (重量: GStreamer同梱 NSIS + Release公開)
+- `.github/workflows/release.yml` (重量: GStreamer同梱 NSIS + Linux Flatpak + Release公開)
   - `push: tags: ['preview.*']`, `pull_request` (paths限定), `workflow_dispatch`
-  - PRでは `src-tauri/**`, `ezstreamer-core/**`, `Cargo.*`, `package.json`, `pnpm-*`, `release.yml` 変更時のみbundle実行 (mainのリリース可能性担保)
+  - PRでは `src-tauri/**`, `ezstreamer-core/**`, `packaging/**`, `Cargo.*`, `package.json`, `pnpm-*`, `release.yml` 変更時のみbundle実行 (mainのリリース可能性担保)
   - docsのみ・UIのみのPRでは走らない。確認したい時のみ手動実行:
     - `gh workflow run Release --ref <branch>`
   - Release公開 (`gh release create/upload`) はタグ時のみ実行。AI の独断公開禁止 (§1)
@@ -29,9 +31,11 @@
 ```bash
 cargo test -p ezstreamer-core
 cargo check -p ezstreamer
+cargo test -p ezstreamer
 pnpm build && pnpm test
 ```
-- Windows 実機/VM がある場合のみ追加: GStreamer MSVC ランタイム導入後に `cargo check -p ezstreamer` を Windows 上で実行 (Linux 上の check は stub側のみ検証。`src-tauri/src/ipc/gst_stream.rs` は Windows CI が担保)
+- Windows 実機/VM がある場合のみ追加: GStreamer MSVC ランタイム導入後に `cargo check -p ezstreamer` を Windows 上で実行 (Windows CI も担保)
+- Linux でバックエンドを check/test するには GStreamer + PipeWire の dev パッケージが必要 (`packaging/flatpak/README.md`)。Linux CI が実バックエンドを担保
 - GStreamer MSVC ランタイム (Windows 開発機): https://gstreamer.freedesktop.org/download/ の MSVC 64-bit Runtime + Development。`GSTREAMER_1_0_ROOT_MSVC_X86_64` が通っていること (design §13.2)
 - pnpm 11系環境: `pnpm i/build/test` が approve-builds ゲートで止まる場合は `pnpm approve-builds esbuild` か、CI (pnpm 10) の結果を正とする
 - フルバンドル確認は CI `Release` 手動実行で代替し、ローカル `tauri build` は最終確認時のみ。
@@ -63,10 +67,11 @@ pnpm build && pnpm test
 git checkout main && git pull
 git tag preview.02 && git push origin preview.02
 ```
-4. タグ発火の `Release` workflow が GStreamer同梱 NSIS を再ビルドして GitHub Release 公開 (§6方式で完了まで監視)
+4. タグ発火の `Release` workflow が GStreamer同梱 NSIS と Linux Flatpak を再ビルドして GitHub Release 公開 (§6方式で完了まで監視)
 - PR時とタグ時の二重ビルドは意図的 (公開物がタグcommit由来である保証のため。簡略化しない方針)
 - 公開物には `resources/licenses/` (GSTREAMER-NOTICE.txt) の同梱必須 (`tauri.conf.json` resources と CI 生成を確認)
 - GStreamer DLL は CI が公式 MSVC ランタイム (`GSTREAMER_URL` pinned) から取得し `resources/gstreamer/` に配置 (design §13.2)。バージョン更新は workflow の pinned URL を変更
+- Flatpak は GNOME runtime を使用し、native PipeWire (音声) と Portal (画面) の権限で動作する (design §13.4)
 - リリース文は1つ前の `preview.*` との比較を必須とする。`release.yml` が `PREV...TAG` の差分から自動生成する:
   `✨ 追加 Added` (`feat:`)、`🔧 改善 Improved` (それ以外)、`🐛 修正 Fixed` (`fix:`) + `Full Changelog` 比較リンク。各節が空なら `- なし`。手動で直す場合は同形式を維持 (`gh release edit <tag> --notes-file <file>`)
 - 公開確認: `gh release view preview.02 --json assets --jq '.assets[].name'` と本文確認: `gh release view preview.02 --json body --jq .body`
