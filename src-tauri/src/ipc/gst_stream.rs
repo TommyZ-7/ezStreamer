@@ -183,7 +183,11 @@ pub fn spawn_pipeline(
         }
     }
     if aacenc.has_property("bitrate", None) {
-        aacenc.set_property("bitrate", &(plan.a_kbps * 1000));
+        // avenc_aac/faac/fdkaacenc expect gint, voaacenc/mfaacenc expect
+        // guint; the string form deserializes to either. A typed
+        // `set_property(bitrate, &(u32))` panics on gint elements
+        // (avenc_aac) and aborts the Tauri main thread (cannot unwind).
+        aacenc.set_property_from_str("bitrate", &(plan.a_kbps * 1000).to_string());
     }
     mux.set_property("streamable", &true);
     sink.set_property("location", &plan.rtmp_url);
