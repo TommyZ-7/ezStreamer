@@ -8,17 +8,22 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA w×h@fps) → videoconvert → videoscale → capsfilter
-//!   → queue → [vulkanupload] → <encoder> → h264parse → mux.
+//!   → queue → videoconvert → [vulkanupload] → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
-//!   audioresample → capsfilter → queue → voaacenc/avenc_aac → aacparse → mux.
+//!   audioresample → capsfilter → queue → audioconvert → voaacenc/avenc_aac → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
 //! ```
 //!
-//! Vulkan (`vulkanh264enc`) only: the capsfilter after videoscale is NV12
-//! (system memory) and `vulkanupload` sits between queue and the encoder,
-//! because the encoder sink is `video/x-raw(memory:VulkanImage),format=NV12`
-//! (verified with GStreamer 1.28 `gst-inspect` + `gst-launch`).
-//! All other encoders keep the BGRA capsfilter with no upload element.
+//! The converters after each `queue` adapt the pinned pacer caps
+//! (BGRA / F32LE) to the encoder's accepted subset (`vah264enc`: NV12;
+//! `faac`/`fdkaacenc`: S16LE). Without them the queue→encoder pad link
+//! itself fails because link checks live caps, not just templates.
+//!
+//! Vulkan (`vulkanh264enc`) only: `vulkanupload` sits between the tail
+//! videoconvert and the encoder, because the encoder sink is
+//! `video/x-raw(memory:VulkanImage),format=NV12` (verified with GStreamer
+//! 1.28 `gst-inspect` + `gst-launch`: BGRA caps → queue → videoconvert →
+//! vulkanupload → vulkanh264enc encodes cleanly).
 
 use crate::config::{validate_bitrate, Profile};
 use crate::error::{Error, Result};
@@ -75,20 +80,10 @@ impl EncoderSpec {
     }
 
     /// True for encoders whose sink needs Vulkan device memory.
-    /// The backend inserts `vulkanupload` between queue and the encoder and
-    /// negotiates NV12 before the upload (see topology note).
+    /// The backend inserts `vulkanupload` between the tail videoconvert and
+    /// the encoder (see topology note).
     pub fn needs_vulkan_upload(self) -> bool {
         matches!(self, Self::Vulkan)
-    }
-
-    /// Format pinned by the capsfilter after videoscale: NV12 (system
-    /// memory) for Vulkan so `vulkanupload` can hand NV12 VulkanImage to
-    /// the encoder; BGRA for everything else (unchanged behavior).
-    pub fn filter_format(self) -> &'static str {
-        match self {
-            Self::Vulkan => "NV12",
-            _ => "BGRA",
-        }
     }
 
     /// Encoder element properties for Topaz-safe low latency:
@@ -174,7 +169,8 @@ pub struct StreamPlan {
 
 impl StreamPlan {
     /// appsrc caps: always BGRA — the Rust FramePacer normalizes to packed
-    /// BGRA and `videoconvert` downstream converts (to NV12 for Vulkan).
+    /// BGRA; the tail videoconvert downstream converts (e.g. NV12 for
+    /// Vulkan/VAAPI) before the encoder.
     pub fn video_caps(&self) -> String {
         format!(
             "video/x-raw,format=BGRA,width={},height={},framerate={}/1",
@@ -182,19 +178,8 @@ impl StreamPlan {
         )
     }
 
-    /// capsfilter after videoscale: NV12 for Vulkan, BGRA otherwise.
-    pub fn filter_caps(&self) -> String {
-        format!(
-            "video/x-raw,format={},width={},height={},framerate={}/1",
-            self.encoder.filter_format(),
-            self.w,
-            self.h,
-            self.fps
-        )
-    }
-
     pub fn audio_caps(&self) -> String {
-        "audio/x-raw,format=F32LE,rate=48000,channels=2".to_string()
+        "audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2".to_string()
     }
 }
 
@@ -270,26 +255,25 @@ pub fn build_launch_string(plan: &StreamPlan) -> String {
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(" ");
-    // Vulkan inserts `vulkanupload` after the queue and pins the pre-queue
-    // filter to NV12 (system memory); see topology note. Verified working:
-    // `... caps NV12 ! queue ! vulkanupload ! vulkanh264enc ...`.
-    let (filter_format, upload) = if plan.encoder.needs_vulkan_upload() {
-        ("NV12", " ! vulkanupload")
+    // Vulkan inserts `vulkanupload` between the tail videoconvert and the
+    // encoder (see topology note). Verified working:
+    // `... queue ! videoconvert ! vulkanupload ! vulkanh264enc ...`.
+    let upload = if plan.encoder.needs_vulkan_upload() {
+        " ! vulkanupload"
     } else {
-        ("BGRA", "")
+        ""
     };
     format!(
         "appsrc name=video_src caps=\"{vcaps}\" is-live=true format=time \
          ! videoconvert ! videoscale \
-         ! \"video/x-raw,format={ffilter},width={w},height={h},framerate={fps}/1\" \
-         ! queue{upload} ! {enc} {props} ! h264parse ! mux. \
+         ! \"video/x-raw,width={w},height={h},framerate={fps}/1\" \
+         ! queue ! videoconvert{upload} ! {enc} {props} ! h264parse ! mux. \
          appsrc name=audio_src caps=\"{acaps}\" is-live=true format=time \
-         ! audioconvert ! audioresample ! queue ! voaacenc bitrate={abps} ! aacparse ! mux. \
+         ! audioconvert ! audioresample ! queue ! audioconvert ! voaacenc bitrate={abps} ! aacparse ! mux. \
          flvmux name=mux streamable=true \
          ! rtmp2sink location=\"{url}\"",
         vcaps = plan.video_caps(),
         acaps = plan.audio_caps(),
-        ffilter = filter_format,
         w = plan.w,
         h = plan.h,
         fps = plan.fps,
@@ -401,7 +385,7 @@ mod tests {
         let s = build_launch_string(&p);
         assert!(s.contains("width=1280"));
         assert!(s.contains("framerate=30/1"));
-        assert!(s.contains("F32LE,rate=48000"));
+        assert!(s.contains("F32LE,layout=interleaved,rate=48000"));
     }
 
     #[test]
@@ -415,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn vulkan_launch_string_uploads_nv12() {
+    fn vulkan_launch_string_inserts_upload_after_tail_convert() {
         let p = build_plan(
             &mid(),
             "h264_vulkan",
@@ -425,12 +409,11 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(p.filter_caps(), "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1");
-        // appsrc stays BGRA (FramePacer output); conversion happens downstream.
+        // appsrc stays BGRA (FramePacer output); the tail videoconvert +
+        // vulkanupload adapt to NV12 VulkanImage before the encoder.
         assert!(p.video_caps().contains("format=BGRA"));
         let s = build_launch_string(&p);
-        assert!(s.contains("format=NV12"), "filter must pin NV12 for upload");
-        assert!(s.contains("queue ! vulkanupload ! vulkanh264enc"));
+        assert!(s.contains("queue ! videoconvert ! vulkanupload ! vulkanh264enc"));
     }
 
     #[test]
@@ -439,6 +422,6 @@ mod tests {
             build_plan(&mid(), "auto", &avail(), "rtmp://topaz.chat/live", "k123", None).unwrap();
         let s = build_launch_string(&p);
         assert!(!s.contains("vulkanupload"));
-        assert!(s.contains("format=BGRA"));
+        assert!(s.contains("queue ! videoconvert !"));
     }
 }

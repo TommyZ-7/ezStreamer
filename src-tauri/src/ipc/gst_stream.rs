@@ -5,11 +5,23 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA) → videoconvert → videoscale → capsfilter
-//!   → queue → [vulkanupload] → <encoder> → h264parse → mux.
+//!   → queue → videoconvert → [vulkanupload] → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
-//!   audioresample → capsfilter → queue → <aacenc> → aacparse → mux.
+//!   audioresample → capsfilter → queue → audioconvert → <aacenc> → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
 //! ```
+//!
+//! The converters after each `queue` are load-bearing, not redundant:
+//! the capsfilter pins BGRA / F32LE for the pacer, but HW encoders accept
+//! only subsets (`vah264enc`: NV12; `faac`/`fdkaacenc`: S16LE). `pad_link`
+//! checks live caps — not just templates — so without the tail converter
+//! the queue→encoder link itself fails (e.g. `vqueue`→`vah264enc`).
+//! When formats already match the converter is a passthrough.
+//!
+//! Vulkan (`vulkanh264enc`) only: `vulkanupload` sits between the tail
+//! videoconvert and the encoder, because the encoder sink is
+//! `video/x-raw(memory:VulkanImage),format=NV12` (verified with GStreamer
+//! 1.28 `gst-inspect` + `gst-launch`).
 //!
 //! Capture stays in Rust (WGC + WASAPI → `VideoSink`/`AudioSink` pumps);
 //! feeder threads move paced frames into the two `appsrc` elements.
@@ -123,9 +135,11 @@ pub fn spawn_pipeline(
     let v_scale = mk("videoscale", "vscale")?;
     let v_caps = mk("capsfilter", "vcaps")?;
     let v_queue = mk("queue", "vqueue")?;
-    // Vulkan encoders consume NV12 VulkanImage memory, not BGRA system
-    // memory: `vulkanupload` bridges queue → encoder (core `filter_caps`
-    // pins the pre-queue filter to NV12 so negotiation succeeds).
+    // Tail converter: adapts the pinned BGRA caps to whatever the encoder
+    // accepts (see topology note above; e.g. NV12 for vah264enc).
+    let v_conv2 = mk("videoconvert", "vconv2")?;
+    // Vulkan encoders consume NV12 VulkanImage memory, not system memory:
+    // `vulkanupload` bridges the tail converter → encoder.
     let v_upload = if plan.encoder.needs_vulkan_upload() {
         Some(mk("vulkanupload", "vupload")?)
     } else {
@@ -139,6 +153,9 @@ pub fn spawn_pipeline(
     let a_res = mk("audioresample", "ares")?;
     let a_caps = mk("capsfilter", "acaps")?;
     let a_queue = mk("queue", "aqueue")?;
+    // Tail converter: adapts the pinned F32LE caps to whatever the AAC
+    // encoder accepts (faac/fdkaacenc take S16LE only).
+    let a_conv2 = mk("audioconvert", "aconv2")?;
     let aacenc = find_aacenc().ok_or_else(|| {
         "no AAC encoder element (voaacenc/avenc_aac/mfaacenc/faac/fdkaacenc) found (runtime/plugins incomplete)"
             .to_string()
@@ -147,27 +164,17 @@ pub fn spawn_pipeline(
     let mux = mk("flvmux", "mux")?;
     let sink = mk("rtmp2sink", "sink")?;
 
-    // Caps. appsrc always emits BGRA (FramePacer output); the filter
-    // after videoscale is NV12 for Vulkan (system memory, uploaded by
-    // `vulkanupload`) and BGRA otherwise.
-    let appsrc_vcaps = gst::Caps::builder("video/x-raw")
+    // Caps: appsrc and the videoscale capsfilter stay BGRA (FramePacer
+    // output); the tail videoconvert adapts to the encoder (NV12 for
+    // Vulkan/VAAPI) and `vulkanupload` bridges to VulkanImage memory.
+    let vcaps = gst::Caps::builder("video/x-raw")
         .field("format", "BGRA")
         .field("width", plan.w as i32)
         .field("height", plan.h as i32)
         .field("framerate", gst::Fraction::new(plan.fps as i32, 1))
         .build();
-    let vcaps = gst::Caps::builder("video/x-raw")
-        .field("format", plan.encoder.filter_format())
-        .field("width", plan.w as i32)
-        .field("height", plan.h as i32)
-        .field("framerate", gst::Fraction::new(plan.fps as i32, 1))
-        .build();
     v_caps.set_property("caps", &vcaps);
-    let acaps = gst::Caps::builder("audio/x-raw")
-        .field("format", "F32LE")
-        .field("rate", 48_000i32)
-        .field("channels", 2i32)
-        .build();
+    let acaps = audio_src_caps();
     a_caps.set_property("caps", &acaps);
 
     // appsrc streaming attributes (live, timestamped).
@@ -179,7 +186,7 @@ pub fn spawn_pipeline(
         appsrc.set_is_live(true);
         appsrc.set_do_timestamp(true);
     }
-    v_src.set_property("caps", &appsrc_vcaps);
+    v_src.set_property("caps", &vcaps);
     a_src.set_property("caps", &acaps);
 
     // Encoder tuning (Topaz-safe low latency, design §4.3).
@@ -208,20 +215,20 @@ pub fn spawn_pipeline(
     mux.set_property("streamable", &true);
     sink.set_property("location", &plan.rtmp_url);
 
-    let mut video_elems = vec![&v_src, &v_conv, &v_scale, &v_caps, &v_queue];
+    // Video leg: tail videoconvert always present; `vulkanupload` only for
+    // Vulkan (bridges system memory → VulkanImage). The conditional element
+    // cannot join the static `add_many` list, so it is added separately.
+    let mut video_elems = vec![&v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2];
     if let Some(ref up) = v_upload {
         video_elems.push(up);
     }
     video_elems.extend([&encoder, &v_parse, &mux]);
     pipeline
         .add_many(&[
-            &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &a_src, &a_conv,
-            &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux, &sink,
+            &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &v_conv2, &encoder, &v_parse, &a_src,
+            &a_conv, &a_res, &a_caps, &a_queue, &a_conv2, &aacenc, &a_parse, &mux, &sink,
         ])
         .map_err(|e| format!("pipeline add failed: {e}"))?;
-    // `add_many` needs the full static list (conditional `vulkanupload`
-    // cannot be expressed there without duplicating it); add the upload
-    // element separately when present.
     if let Some(ref up) = v_upload {
         pipeline
             .add(up)
@@ -229,7 +236,7 @@ pub fn spawn_pipeline(
     }
     gst::Element::link_many(&video_elems).map_err(|e| format!("video link failed: {e:?}"))?;
     gst::Element::link_many(&[
-        &a_src, &a_conv, &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux,
+        &a_src, &a_conv, &a_res, &a_caps, &a_queue, &a_conv2, &aacenc, &a_parse, &mux,
     ])
     .map_err(|e| format!("audio link failed: {e:?}"))?;
     mux.link(&sink)
@@ -389,6 +396,20 @@ fn find_aacenc() -> Option<gstreamer::Element> {
     None
 }
 
+/// Caps offered by `audio_src` and pinned by the audio `capsfilter`
+/// (48kHz interleaved stereo F32LE, matching the Rust Mixer output).
+/// `layout` is load-bearing: audioconvert/audioresample reject layout-less
+/// caps at set_caps (`gst_audio_info_from_caps: no layout given`), which
+/// surfaces as `audio_src ... not-negotiated` once data flows.
+fn audio_src_caps() -> gstreamer::Caps {
+    gstreamer::Caps::builder("audio/x-raw")
+        .field("format", "F32LE")
+        .field("layout", "interleaved")
+        .field("rate", 48_000i32)
+        .field("channels", 2i32)
+        .build()
+}
+
 /// True when the registry provides the element factory (for `probe_encoders`).
 pub fn has_element(name: &str) -> bool {
     gstreamer::ElementFactory::find(name).is_some()
@@ -420,5 +441,22 @@ pub fn ensure_bundled_runtime(app: &tauri::AppHandle) {
     }
     if let Some(plugins) = ezstreamer_core::gst::bundled_plugin_dir(&res) {
         std::env::set_var("GST_PLUGIN_PATH", &plugins);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_caps_carry_interleaved_layout() {
+        // Regression: without `layout`, audioconvert/audioresample refuse
+        // set_caps and the stream dies with audio_src not-negotiated.
+        gstreamer::init().unwrap();
+        let s = audio_src_caps().to_string();
+        assert!(s.contains("format=(string)F32LE"), "caps: {s}");
+        assert!(s.contains("layout=(string)interleaved"), "caps: {s}");
+        assert!(s.contains("rate=(int)48000"), "caps: {s}");
+        assert!(s.contains("channels=(int)2"), "caps: {s}");
     }
 }
