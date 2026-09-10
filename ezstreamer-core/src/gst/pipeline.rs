@@ -8,11 +8,17 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA w×h@fps) → videoconvert → videoscale → capsfilter
-//!   → queue → <encoder> → h264parse → mux.
+//!   → queue → [vulkanupload] → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
 //!   audioresample → capsfilter → queue → voaacenc/avenc_aac → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
 //! ```
+//!
+//! Vulkan (`vulkanh264enc`) only: the capsfilter after videoscale is NV12
+//! (system memory) and `vulkanupload` sits between queue and the encoder,
+//! because the encoder sink is `video/x-raw(memory:VulkanImage),format=NV12`
+//! (verified with GStreamer 1.28 `gst-inspect` + `gst-launch`).
+//! All other encoders keep the BGRA capsfilter with no upload element.
 
 use crate::config::{validate_bitrate, Profile};
 use crate::error::{Error, Result};
@@ -62,10 +68,26 @@ impl EncoderSpec {
             Self::Qsv => &["qsvh264enc"],
             Self::Amf => &["amfh264enc"],
             Self::Vaapi => &["vah264enc", "vaapih264enc"],
-            // No stable Vulkan H.264 encoder element across Windows builds;
-            // kept for UI parity, resolved at probe time (usually unavailable).
+            // Vulkan Video encode (GStreamer 1.28+, gst-plugins-bad `vulkan`).
             Self::Vulkan => &["vulkanh264enc"],
             Self::X264 => &["x264enc", "openh264enc"],
+        }
+    }
+
+    /// True for encoders whose sink needs Vulkan device memory.
+    /// The backend inserts `vulkanupload` between queue and the encoder and
+    /// negotiates NV12 before the upload (see topology note).
+    pub fn needs_vulkan_upload(self) -> bool {
+        matches!(self, Self::Vulkan)
+    }
+
+    /// Format pinned by the capsfilter after videoscale: NV12 (system
+    /// memory) for Vulkan so `vulkanupload` can hand NV12 VulkanImage to
+    /// the encoder; BGRA for everything else (unchanged behavior).
+    pub fn filter_format(self) -> &'static str {
+        match self {
+            Self::Vulkan => "NV12",
+            _ => "BGRA",
         }
     }
 
@@ -96,9 +118,28 @@ impl EncoderSpec {
                 ("bframes".into(), "0".into()),
                 ("rate-control".into(), "cbr".into()),
             ],
-            Self::Vaapi | Self::Vulkan => vec![
+            Self::Vaapi => vec![
                 ("bitrate".into(), bitrate),
+                // `vah264enc` (1.28) uses hyphenated/canonical names;
+                // legacy `vaapih264enc` uses `keyframe-period`/`bframes`.
+                // `has_property` at build time picks whichever exists.
+                ("key-int-max".into(), gop.clone()),
                 ("keyframe-period".into(), gop),
+                ("b-frames".into(), "0".into()),
+                ("bframes".into(), "0".into()),
+                ("rate-control".into(), "cbr".into()),
+            ],
+            // `vulkanh264enc` sink is NV12 VulkanImage (see topology note).
+            // Verified on GStreamer 1.28.7: no `keyframe-period`/`gop-size`;
+            // GOP is `idr-period`, B-frames `b-frames`, and `rate-control`
+            // defaults to `cqp` so CBR must be set explicitly for `bitrate`
+            // to apply. Legacy aliases are harmless via `has_property`.
+            Self::Vulkan => vec![
+                ("bitrate".into(), bitrate),
+                ("rate-control".into(), "cbr".into()),
+                ("idr-period".into(), gop.clone()),
+                ("keyframe-period".into(), gop),
+                ("b-frames".into(), "0".into()),
                 ("bframes".into(), "0".into()),
             ],
             // x264enc takes kbit/s; tune zerolatency is BANNED (Topaz gray-screen
@@ -132,10 +173,23 @@ pub struct StreamPlan {
 }
 
 impl StreamPlan {
+    /// appsrc caps: always BGRA — the Rust FramePacer normalizes to packed
+    /// BGRA and `videoconvert` downstream converts (to NV12 for Vulkan).
     pub fn video_caps(&self) -> String {
         format!(
             "video/x-raw,format=BGRA,width={},height={},framerate={}/1",
             self.w, self.h, self.fps
+        )
+    }
+
+    /// capsfilter after videoscale: NV12 for Vulkan, BGRA otherwise.
+    pub fn filter_caps(&self) -> String {
+        format!(
+            "video/x-raw,format={},width={},height={},framerate={}/1",
+            self.encoder.filter_format(),
+            self.w,
+            self.h,
+            self.fps
         )
     }
 
@@ -146,6 +200,10 @@ impl StreamPlan {
 
 /// Resolve encoder id (`auto` or manual) to a spec. `available` lists usable
 /// UI ids from [`crate::gst::probe_encoders`]; `auto` picks priority order.
+///
+/// Manual selection is used as-is (design §8.1): only the id is validated,
+/// registry presence is NOT gated here. A missing element fails later at
+/// pipeline build with an actionable `no GStreamer element for …` message.
 pub fn resolve_encoder(encoder_override: &str, available: &[String]) -> Result<EncoderSpec> {
     if encoder_override == "auto" {
         for cand in crate::gst::AUTO_CANDIDATES {
@@ -156,13 +214,8 @@ pub fn resolve_encoder(encoder_override: &str, available: &[String]) -> Result<E
         }
         return Ok(EncoderSpec::X264); // software fallback always exists
     }
-    let spec = EncoderSpec::from_id(encoder_override)
-        .ok_or_else(|| Error::EncoderNotAvailable(encoder_override.to_string()))?;
-    if available.iter().any(|a| a == spec.id()) || spec == EncoderSpec::X264 {
-        Ok(spec)
-    } else {
-        Err(Error::EncoderNotAvailable(encoder_override.to_string()))
-    }
+    EncoderSpec::from_id(encoder_override)
+        .ok_or_else(|| Error::EncoderNotAvailable(encoder_override.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -217,20 +270,30 @@ pub fn build_launch_string(plan: &StreamPlan) -> String {
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(" ");
+    // Vulkan inserts `vulkanupload` after the queue and pins the pre-queue
+    // filter to NV12 (system memory); see topology note. Verified working:
+    // `... caps NV12 ! queue ! vulkanupload ! vulkanh264enc ...`.
+    let (filter_format, upload) = if plan.encoder.needs_vulkan_upload() {
+        ("NV12", " ! vulkanupload")
+    } else {
+        ("BGRA", "")
+    };
     format!(
         "appsrc name=video_src caps=\"{vcaps}\" is-live=true format=time \
          ! videoconvert ! videoscale \
-         ! \"video/x-raw,width={w},height={h},framerate={fps}/1\" \
-         ! queue ! {enc} {props} ! h264parse ! mux. \
+         ! \"video/x-raw,format={ffilter},width={w},height={h},framerate={fps}/1\" \
+         ! queue{upload} ! {enc} {props} ! h264parse ! mux. \
          appsrc name=audio_src caps=\"{acaps}\" is-live=true format=time \
          ! audioconvert ! audioresample ! queue ! voaacenc bitrate={abps} ! aacparse ! mux. \
          flvmux name=mux streamable=true \
          ! rtmp2sink location=\"{url}\"",
         vcaps = plan.video_caps(),
         acaps = plan.audio_caps(),
+        ffilter = filter_format,
         w = plan.w,
         h = plan.h,
         fps = plan.fps,
+        upload = upload,
         enc = plan.encoder_element,
         props = enc_props,
         abps = plan.a_kbps * 1000,
@@ -269,9 +332,29 @@ mod tests {
     }
 
     #[test]
-    fn manual_unavailable_is_rejected() {
-        let err =
-            build_plan(&mid(), "h264_qsv", &avail(), "rtmp://topaz.chat/live", "abc", None).unwrap_err();
+    fn manual_selection_is_used_as_is_per_design() {
+        // Design §8.1: manual bypasses the registry gate; a missing element
+        // fails later at pipeline build, not here. Regression test for
+        // `encoder not available: h264_vulkan` on manual select.
+        let p = build_plan(&mid(), "h264_vulkan", &[], "rtmp://topaz.chat/live", "abc", None)
+            .unwrap();
+        assert_eq!(p.encoder, EncoderSpec::Vulkan);
+        let p = build_plan(&mid(), "h264_qsv", &avail(), "rtmp://topaz.chat/live", "abc", None)
+            .unwrap();
+        assert_eq!(p.encoder, EncoderSpec::Qsv);
+    }
+
+    #[test]
+    fn unknown_manual_id_is_rejected() {
+        let err = build_plan(
+            &mid(),
+            "h264_nope",
+            &avail(),
+            "rtmp://topaz.chat/live",
+            "abc",
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::EncoderNotAvailable(_)));
     }
 
@@ -319,5 +402,43 @@ mod tests {
         assert!(s.contains("width=1280"));
         assert!(s.contains("framerate=30/1"));
         assert!(s.contains("F32LE,rate=48000"));
+    }
+
+    #[test]
+    fn vulkan_props_request_cbr_with_idr_gop() {
+        let props = EncoderSpec::Vulkan.gst_props(&mid());
+        let get = |k: &str| props.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("bitrate"), Some("1500"));
+        assert_eq!(get("rate-control"), Some("cbr"));
+        assert_eq!(get("idr-period"), Some("60"));
+        assert_eq!(get("b-frames"), Some("0"));
+    }
+
+    #[test]
+    fn vulkan_launch_string_uploads_nv12() {
+        let p = build_plan(
+            &mid(),
+            "h264_vulkan",
+            &[],
+            "rtmp://topaz.chat/live",
+            "k123",
+            None,
+        )
+        .unwrap();
+        assert_eq!(p.filter_caps(), "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1");
+        // appsrc stays BGRA (FramePacer output); conversion happens downstream.
+        assert!(p.video_caps().contains("format=BGRA"));
+        let s = build_launch_string(&p);
+        assert!(s.contains("format=NV12"), "filter must pin NV12 for upload");
+        assert!(s.contains("queue ! vulkanupload ! vulkanh264enc"));
+    }
+
+    #[test]
+    fn non_vulkan_launch_string_has_no_upload() {
+        let p =
+            build_plan(&mid(), "auto", &avail(), "rtmp://topaz.chat/live", "k123", None).unwrap();
+        let s = build_launch_string(&p);
+        assert!(!s.contains("vulkanupload"));
+        assert!(s.contains("format=BGRA"));
     }
 }

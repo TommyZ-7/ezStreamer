@@ -118,8 +118,11 @@ jobs:
             else { $missingElements += $e }
           }
           # x264 alternative + HW encoders: stage all the runtime provides
-          # (probe_encoders exposes present ones as usable).
-          foreach ($e in @("openh264enc","nvh264enc","qsvh264enc","amfh264enc","vah264enc","vaapih264enc","vulkanh264enc")) {
+          # (probe_encoders exposes present ones as usable). vulkanupload is
+          # required by the Vulkan video leg (queue → vulkanupload → enc) and
+          # lives in the same libgstvulkan as the encoder — staged explicitly
+          # so a future split never drops it silently.
+          foreach ($e in @("openh264enc","nvh264enc","qsvh264enc","amfh264enc","vah264enc","vaapih264enc","vulkanh264enc","vulkanupload")) {
             if (Copy-PluginForElement $e) { Write-Host "  $e OK (optional)" }
             else { Write-Host "  NOTE: full runtime lacks optional element: $e" }
           }

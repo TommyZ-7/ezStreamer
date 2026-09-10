@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! video_src(appsrc BGRA) → videoconvert → videoscale → capsfilter
-//!   → queue → <encoder> → h264parse → mux.
+//!   → queue → [vulkanupload] → <encoder> → h264parse → mux.
 //! audio_src(appsrc F32LE 48k stereo, Rust Mixer output) → audioconvert →
 //!   audioresample → capsfilter → queue → <aacenc> → aacparse → mux.
 //! mux(flvmux streamable) → rtmp2sink location=rtmp://…/{key}
@@ -123,6 +123,14 @@ pub fn spawn_pipeline(
     let v_scale = mk("videoscale", "vscale")?;
     let v_caps = mk("capsfilter", "vcaps")?;
     let v_queue = mk("queue", "vqueue")?;
+    // Vulkan encoders consume NV12 VulkanImage memory, not BGRA system
+    // memory: `vulkanupload` bridges queue → encoder (core `filter_caps`
+    // pins the pre-queue filter to NV12 so negotiation succeeds).
+    let v_upload = if plan.encoder.needs_vulkan_upload() {
+        Some(mk("vulkanupload", "vupload")?)
+    } else {
+        None
+    };
     let encoder = find_encoder(&plan.encoder)
         .ok_or_else(|| format!("no GStreamer element for {}", plan.encoder.id()))?;
     let v_parse = mk("h264parse", "vparse")?;
@@ -139,9 +147,17 @@ pub fn spawn_pipeline(
     let mux = mk("flvmux", "mux")?;
     let sink = mk("rtmp2sink", "sink")?;
 
-    // Caps.
-    let vcaps = gst::Caps::builder("video/x-raw")
+    // Caps. appsrc always emits BGRA (FramePacer output); the filter
+    // after videoscale is NV12 for Vulkan (system memory, uploaded by
+    // `vulkanupload`) and BGRA otherwise.
+    let appsrc_vcaps = gst::Caps::builder("video/x-raw")
         .field("format", "BGRA")
+        .field("width", plan.w as i32)
+        .field("height", plan.h as i32)
+        .field("framerate", gst::Fraction::new(plan.fps as i32, 1))
+        .build();
+    let vcaps = gst::Caps::builder("video/x-raw")
+        .field("format", plan.encoder.filter_format())
         .field("width", plan.w as i32)
         .field("height", plan.h as i32)
         .field("framerate", gst::Fraction::new(plan.fps as i32, 1))
@@ -163,7 +179,7 @@ pub fn spawn_pipeline(
         appsrc.set_is_live(true);
         appsrc.set_do_timestamp(true);
     }
-    v_src.set_property("caps", &vcaps);
+    v_src.set_property("caps", &appsrc_vcaps);
     a_src.set_property("caps", &acaps);
 
     // Encoder tuning (Topaz-safe low latency, design §4.3).
@@ -192,16 +208,26 @@ pub fn spawn_pipeline(
     mux.set_property("streamable", &true);
     sink.set_property("location", &plan.rtmp_url);
 
+    let mut video_elems = vec![&v_src, &v_conv, &v_scale, &v_caps, &v_queue];
+    if let Some(ref up) = v_upload {
+        video_elems.push(up);
+    }
+    video_elems.extend([&encoder, &v_parse, &mux]);
     pipeline
         .add_many(&[
             &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &a_src, &a_conv,
             &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux, &sink,
         ])
         .map_err(|e| format!("pipeline add failed: {e}"))?;
-    gst::Element::link_many(&[
-        &v_src, &v_conv, &v_scale, &v_caps, &v_queue, &encoder, &v_parse, &mux,
-    ])
-    .map_err(|e| format!("video link failed: {e:?}"))?;
+    // `add_many` needs the full static list (conditional `vulkanupload`
+    // cannot be expressed there without duplicating it); add the upload
+    // element separately when present.
+    if let Some(ref up) = v_upload {
+        pipeline
+            .add(up)
+            .map_err(|e| format!("pipeline add failed: {e}"))?;
+    }
+    gst::Element::link_many(&video_elems).map_err(|e| format!("video link failed: {e:?}"))?;
     gst::Element::link_many(&[
         &a_src, &a_conv, &a_res, &a_caps, &a_queue, &aacenc, &a_parse, &mux,
     ])
