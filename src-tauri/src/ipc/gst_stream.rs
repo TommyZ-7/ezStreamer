@@ -160,11 +160,7 @@ pub fn spawn_pipeline(
         .field("framerate", gst::Fraction::new(plan.fps as i32, 1))
         .build();
     v_caps.set_property("caps", &vcaps);
-    let acaps = gst::Caps::builder("audio/x-raw")
-        .field("format", "F32LE")
-        .field("rate", 48_000i32)
-        .field("channels", 2i32)
-        .build();
+    let acaps = audio_src_caps();
     a_caps.set_property("caps", &acaps);
 
     // appsrc streaming attributes (live, timestamped).
@@ -376,6 +372,20 @@ fn find_aacenc() -> Option<gstreamer::Element> {
     None
 }
 
+/// Caps offered by `audio_src` and pinned by the audio `capsfilter`
+/// (48kHz interleaved stereo F32LE, matching the Rust Mixer output).
+/// `layout` is load-bearing: audioconvert/audioresample reject layout-less
+/// caps at set_caps (`gst_audio_info_from_caps: no layout given`), which
+/// surfaces as `audio_src ... not-negotiated` once data flows.
+fn audio_src_caps() -> gstreamer::Caps {
+    gstreamer::Caps::builder("audio/x-raw")
+        .field("format", "F32LE")
+        .field("layout", "interleaved")
+        .field("rate", 48_000i32)
+        .field("channels", 2i32)
+        .build()
+}
+
 /// True when the registry provides the element factory (for `probe_encoders`).
 pub fn has_element(name: &str) -> bool {
     gstreamer::ElementFactory::find(name).is_some()
@@ -407,5 +417,22 @@ pub fn ensure_bundled_runtime(app: &tauri::AppHandle) {
     }
     if let Some(plugins) = ezstreamer_core::gst::bundled_plugin_dir(&res) {
         std::env::set_var("GST_PLUGIN_PATH", &plugins);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_caps_carry_interleaved_layout() {
+        // Regression: without `layout`, audioconvert/audioresample refuse
+        // set_caps and the stream dies with audio_src not-negotiated.
+        gstreamer::init().unwrap();
+        let s = audio_src_caps().to_string();
+        assert!(s.contains("format=(string)F32LE"), "caps: {s}");
+        assert!(s.contains("layout=(string)interleaved"), "caps: {s}");
+        assert!(s.contains("rate=(int)48000"), "caps: {s}");
+        assert!(s.contains("channels=(int)2"), "caps: {s}");
     }
 }
