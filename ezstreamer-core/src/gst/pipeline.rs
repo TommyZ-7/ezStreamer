@@ -95,10 +95,15 @@ impl EncoderSpec {
         let bitrate = profile.v_kbps.to_string();
         match self {
             Self::Nvenc => vec![
-                // Requirement §2.2: the NVENC "Low Latency" preset caused
-                // gray-screen playback on VRChat, so Booth's "Max Performance"
-                // tuning is used instead (high-performance).
-                ("preset".into(), "high-performance".into()),
+                // Requirement §2.2: Booth's "Max Performance" tuning. The
+                // real GstNvEncoderPreset nick is `hp` (High Performance);
+                // there is no `high-performance` member, and feeding that
+                // string to `set_property_from_str` panicked at runtime
+                // (review 2026-09-10). `hp` is deprecated since 1.22 in
+                // favor of p1~7 + tune but still present in 1.28. The
+                // `low-latency*` presets stay forbidden (VRChat gray-screen
+                // regression).
+                ("preset".into(), "hp".into()),
                 ("rc-mode".into(), "cbr".into()),
                 ("bitrate".into(), bitrate),
                 ("gop-size".into(), gop),
@@ -418,11 +423,49 @@ mod tests {
         let get = |k: &str| props.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("bframes"), Some("0"));
         assert_eq!(get("rc-mode"), Some("cbr"));
-        // Requirements §2.2: "Low Latency" preset is forbidden (gray screen).
-        assert_eq!(get("preset"), Some("high-performance"));
+        // Requirements §2.2: "Low Latency" preset is forbidden (gray screen)
+        // and the value must be a real GstNvEncoderPreset nick (`hp`, not the
+        // non-existent `high-performance`; review 2026-09-10).
+        assert_eq!(get("preset"), Some("hp"));
         assert_ne!(get("preset"), Some("low-latency"));
+        assert_ne!(get("preset"), Some("high-performance"));
         assert_eq!(get("rc-lookahead"), Some("0"));
         assert_eq!(get("zerolatency"), Some("false"));
+    }
+
+    #[test]
+    fn nvenc_preset_value_is_a_documented_nick() {
+        // Guard against inventing a preset name again (review 2026-09-10:
+        // `high-performance` is not a GstNvEncoderPreset member; the backend
+        // skips unknown values at runtime, but silently losing the preset is
+        // still a behavior bug). Keep this in sync with the published enum.
+        const NVENC_PRESETS: &[&str] = &[
+            "default",
+            "hp",
+            "hq",
+            "low-latency",
+            "low-latency-hq",
+            "low-latency-hp",
+            "lossless",
+            "lossless-hp",
+            "p1",
+            "p2",
+            "p3",
+            "p4",
+            "p5",
+            "p6",
+            "p7",
+        ];
+        let props = EncoderSpec::Nvenc.gst_props(&mid());
+        let preset = props
+            .iter()
+            .find(|(k, _)| k == "preset")
+            .map(|(_, v)| v.as_str())
+            .expect("nvenc props carry a preset");
+        assert!(
+            NVENC_PRESETS.contains(&preset),
+            "unknown GstNvEncoderPreset nick: {preset}"
+        );
     }
 
     #[test]

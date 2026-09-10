@@ -221,22 +221,22 @@ pub fn spawn_pipeline(
         .factory()
         .map(|f| f.name().to_string())
         .unwrap_or_else(|| plan.encoder_element.clone());
-    for (k, v) in plan.encoder.gst_props_for(&encoder_name, &profile) {
-        if encoder.has_property(k.as_str(), None) {
-            encoder.set_property_from_str(k.as_str(), v.as_str());
-        }
-    }
+    apply_string_props(
+        &encoder,
+        &plan.encoder.gst_props_for(&encoder_name, &profile),
+    );
     crate::logging::info(&format!(
         "stream start: encoder={encoder_name} {}x{}@{}fps v={}kbps a={}kbps url={}",
         plan.w, plan.h, plan.fps, plan.v_kbps, plan.a_kbps, plan.rtmp_url
     ));
-    if aacenc.has_property("bitrate", None) {
-        // avenc_aac/faac/fdkaacenc expect gint, voaacenc/mfaacenc expect
-        // guint; the string form deserializes to either. A typed
-        // `set_property(bitrate, &(u32))` panics on gint elements
-        // (avenc_aac) and aborts the Tauri main thread (cannot unwind).
-        aacenc.set_property_from_str("bitrate", &(plan.a_kbps * 1000).to_string());
-    }
+    // avenc_aac/faac/fdkaacenc expect gint, voaacenc/mfaacenc expect guint;
+    // the string form deserializes to either. A typed
+    // `set_property(bitrate, &(u32))` panics on gint elements (avenc_aac)
+    // and aborts the Tauri main thread (cannot unwind).
+    apply_string_props(
+        &aacenc,
+        &[("bitrate".into(), (plan.a_kbps * 1000).to_string())],
+    );
     mux.set_property("streamable", &true);
     sink.set_property("location", &plan.rtmp_url);
 
@@ -415,6 +415,35 @@ pub fn spawn_pipeline(
     })
 }
 
+/// Apply `(property, value)` pairs after deserializing each value for the
+/// property's `ParamSpec`. `Element::set_property_from_str` panics when a
+/// value cannot be deserialized (e.g. an enum nick the runtime does not
+/// know), and a panic in this sync `start_stream` path aborts the process
+/// (review 2026-09-10). Unknown values are logged and skipped instead, so a
+/// plan tuned for a newer runtime degrades gracefully on an older one.
+fn apply_string_props(element: &gstreamer::Element, props: &[(String, String)]) {
+    use gstreamer::prelude::*;
+
+    let element_name = element
+        .factory()
+        .map(|f| f.name().to_string())
+        .unwrap_or_else(|| element.name().to_string());
+    for (key, value) in props {
+        let Some(pspec) = element.find_property(key.as_str()) else {
+            continue; // property absent on this element/runtime
+        };
+        match gstreamer::glib::Value::deserialize_with_pspec(value, &pspec) {
+            Ok(parsed) => element.set_property(key.as_str(), parsed),
+            Err(_) => crate::logging::log(
+                "warn",
+                &format!(
+                    "gst: {element_name}: skipping {key}={value} (not valid for this runtime)"
+                ),
+            ),
+        }
+    }
+}
+
 /// Block the calling feeder until the pipeline is PLAYING (or stopping).
 /// Live sources only produce data in PLAYING, when the clock is distributed.
 fn wait_for_playing(pipeline: &gstreamer::Pipeline, stop: &AtomicBool) {
@@ -512,5 +541,21 @@ mod tests {
         assert!(s.contains("layout=(string)interleaved"), "caps: {s}");
         assert!(s.contains("rate=(int)48000"), "caps: {s}");
         assert!(s.contains("channels=(int)2"), "caps: {s}");
+    }
+
+    #[test]
+    fn apply_string_props_skips_invalid_enum_instead_of_panicking() {
+        // Regression (review 2026-09-10): `set_property_from_str` panics on a
+        // value it cannot deserialize (e.g. NVENC `preset=high-performance`),
+        // and a panic from the sync `start_stream` command aborts the whole
+        // process. Invalid values must be skipped; valid ones still apply.
+        use gstreamer::prelude::*;
+
+        gstreamer::init().unwrap();
+        let elem = gstreamer::ElementFactory::make("appsrc").build().unwrap();
+        apply_string_props(&elem, &[("leaky-type".into(), "not-a-real-leak".into())]);
+        apply_string_props(&elem, &[("leaky-type".into(), "downstream".into())]);
+        let leaky: gstreamer_app::AppLeakyType = elem.property("leaky-type");
+        assert_eq!(leaky, gstreamer_app::AppLeakyType::Downstream);
     }
 }
