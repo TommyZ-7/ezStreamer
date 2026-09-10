@@ -81,7 +81,7 @@ pub enum ScreenTargetKind {
     Window,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LastSources {
     #[serde(default)]
     pub screen: ScreenTarget,
@@ -89,6 +89,21 @@ pub struct LastSources {
     pub include_apps: Vec<String>,
     #[serde(default)]
     pub mic: MicSource,
+    /// F-SC-04: cursor capture toggle, initial ON. Added after schema v2;
+    /// missing in old files -> serde default true.
+    #[serde(default = "yes")]
+    pub cursor: bool,
+}
+
+impl Default for LastSources {
+    fn default() -> Self {
+        Self {
+            screen: ScreenTarget::default(),
+            include_apps: Vec::new(),
+            mic: MicSource::default(),
+            cursor: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,9 +135,10 @@ impl Default for ProfilesConfig {
 }
 
 fn default_locale() -> String {
-    // F-CF-05: follow OS language, ja/en only.
-    let lang = std::env::var("LANG").unwrap_or_default().to_lowercase();
-    if lang.starts_with("ja") { "ja".into() } else { "en".into() }
+    // F-CF-05: empty = follow the OS/webview language. The frontend resolves
+    // `navigator.language` and persists the user's explicit choice here.
+    // (Reading `LANG` here only worked on Unix and gave Windows users "en".)
+    String::new()
 }
 
 /// Built-in profiles (requirements.md §5.3). Profile names are i18n keys, not literals.
@@ -258,6 +274,19 @@ mod tests {
         assert!(validate_stream_key(&"a".repeat(65)).is_err()); // > 64
         assert!(validate_stream_key("bad key!").is_err());
         assert!(validate_stream_key("ok_key-1").is_ok());
+    }
+
+    #[test]
+    fn cursor_defaults_on_and_locale_is_auto() {
+        let cfg = ProfilesConfig::default();
+        assert!(cfg.last_sources.cursor, "cursor initial ON (F-SC-04)");
+        assert_eq!(cfg.locale, "", "empty locale = resolve from OS/webview");
+        // Profiles written before cursor existed must load as ON.
+        let json = serde_json::json!({
+            "lastSources": { "screen": { "type": "display", "id": "monitor:0" } }
+        });
+        let parsed: ProfilesConfig = serde_json::from_value(json).unwrap();
+        assert!(parsed.last_sources.cursor);
     }
 
     #[test]

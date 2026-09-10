@@ -13,6 +13,10 @@ pub struct StreamConfig {
     pub audio: AudioSelection,
     pub profile_id: String,
     pub encoder_override: String,
+    /// F-SC-04: draw the cursor into the capture (initial ON).
+    pub cursor: bool,
+    /// F-AU-04: per-app gain/mute chosen before going live (session-only).
+    pub app_mix: BTreeMap<String, SourceGain>,
     /// Legacy FFmpeg-generation knobs, ignored by the GStreamer backend
     /// (kept so saved profiles stay compatible). Video always flows
     /// Rust capture → `appsrc`.
@@ -31,6 +35,8 @@ impl Default for StreamConfig {
             audio: AudioSelection::default(),
             profile_id: "mid".into(),
             encoder_override: "auto".into(),
+            cursor: true,
+            app_mix: BTreeMap::new(),
             hw_direct: false,
             direct_input: None,
         }
