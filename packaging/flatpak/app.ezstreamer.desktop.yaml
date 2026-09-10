@@ -38,6 +38,9 @@ finish-args:
   - --socket=fallback-x11
   # Mic/system/app audio via PipeWire-Pulse
   - --socket=pulseaudio
+  # Native PipeWire socket: the app uses the pipewire crate directly for
+  # audio capture/enumeration (PulseAudio socket alone is not enough).
+  - --filesystem=xdg-run/pipewire-0
   # HW encode/decode (VA-API/NVENC) + GL presentation
   - --device=dri
   # NOTE: ScreenCast needs no explicit permission — it is mediated by

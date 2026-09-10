@@ -58,7 +58,10 @@ pub fn start_screen(
     let handle = std::thread::Builder::new()
         .name("wgc-capture".into())
         .spawn(move || {
-            if let Err(e) = run_capture(&app, &target, dst_w, dst_h, cursor, &sink_for_capture, &stop2) {
+            if let Err(e) =
+                run_capture(&app, &target, dst_w, dst_h, cursor, &sink_for_capture, stop2)
+            {
+                crate::logging::error(&format!("wgc capture: {e}"));
                 let _ = app2.emit(
                     "stream://error",
                     ezstreamer_core::ipc_types::StreamError {
@@ -80,7 +83,7 @@ fn run_capture(
     dst_h: u32,
     cursor: bool,
     sink: &VideoSink,
-    stop: &AtomicBool,
+    stop: Arc<AtomicBool>,
 ) -> super::Result<()> {
     use windows::Foundation::TypedEventHandler;
     use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
@@ -162,8 +165,9 @@ fn run_capture(
     session.SetIsCursorCaptureEnabled(cursor).map_err(err)?;
 
     let sink2 = sink.clone();
-    let stop2 = Arc::new(AtomicBool::new(false));
-    let handler_stop = stop2.clone();
+    // The handler must observe the same stop flag as the capture loop;
+    // this used to be a fresh never-set AtomicBool (dead check).
+    let handler_stop = stop.clone();
     let preview_last = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
     let preview_last2 = preview_last.clone();
     let app2 = app.clone();

@@ -27,7 +27,13 @@ export interface ProfilesConfig {
   activeProfile: string;
   profiles: Record<string, Profile>;
   lastStreamKey: string;
-  lastSources: { screen: ScreenTarget; includeApps: string[]; mic: MicSource };
+  lastSources: {
+    screen: ScreenTarget;
+    includeApps: string[];
+    mic: MicSource;
+    /** F-SC-04; missing in old files -> treated as true. */
+    cursor?: boolean;
+  };
   encoderOverride: string;
 }
 
@@ -38,6 +44,15 @@ export interface StreamConfig {
   audio: { mode: string; apps: string[]; mic: MicSource };
   profileId: string;
   encoderOverride: string;
+  /** F-SC-04: draw cursor into the capture (initial ON). */
+  cursor: boolean;
+  /** F-AU-04: per-app gain/mute chosen before going live. */
+  appMix?: Record<string, AppMixEntry>;
+}
+
+export interface AppMixEntry {
+  gain: number;
+  muted: boolean;
 }
 
 export interface StreamStatus {

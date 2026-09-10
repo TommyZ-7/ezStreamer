@@ -8,6 +8,8 @@ const getWindowsMock = vi.fn(async () => []);
 const getAudioDevicesMock = vi.fn(async () => null);
 const getProfilesMock = vi.fn(async () => null);
 const probeEncodersMock = vi.fn<() => Promise<EncoderInfo[]>>(async () => []);
+const saveProfilesMock = vi.fn(async (_cfg: unknown) => undefined);
+const updateAudioMixMock = vi.fn(async (_mix: unknown) => undefined);
 
 vi.mock("./lib/api", () => ({
   api: {
@@ -18,6 +20,8 @@ vi.mock("./lib/api", () => ({
     getAudioDevices: () => getAudioDevicesMock(),
     getProfiles: () => getProfilesMock(),
     probeEncoders: () => probeEncodersMock(),
+    saveProfiles: (cfg: unknown) => saveProfilesMock(cfg),
+    updateAudioMix: (mix: unknown) => updateAudioMixMock(mix),
   },
 }));
 
@@ -146,5 +150,63 @@ describe("startup loading phases", () => {
     expect(probeEncodersMock).toHaveBeenCalled();
     expect(useStore.getState().booted).toBe(true);
     expect(useStore.getState().encodersLoading).toBe(false);
+  });
+});
+
+describe("settings persistence (F-CF-02)", () => {
+  const cfg = {
+    version: 2,
+    locale: "ja",
+    ingestUrl: "rtmp://topaz.chat/live",
+    activeProfile: "high",
+    profiles: {},
+    lastStreamKey: "old-key",
+    lastSources: {
+      screen: { type: "display" as const, id: "display:0" },
+      includeApps: [],
+      mic: { device: "default", enabled: true, muted: false, gain: 1.0 },
+      cursor: false,
+    },
+    encoderOverride: "auto",
+  };
+
+  it("restores locale/cursor and debounces selection saves", async () => {
+    vi.useFakeTimers();
+    getProfilesMock.mockResolvedValueOnce(cfg as never);
+
+    await useStore.getState().loadBase();
+    expect(useStore.getState().locale).toBe("ja");
+    expect(useStore.getState().cursor).toBe(false);
+    expect(useStore.getState().screen.id).toBe("display:0");
+
+    useStore.getState().setStreamKey("new-key");
+    useStore.getState().setCursor(true);
+    await vi.advanceTimersByTimeAsync(450);
+
+    expect(saveProfilesMock).toHaveBeenCalledTimes(1);
+    const saved = saveProfilesMock.mock.calls[0][0] as {
+      lastStreamKey: string;
+      locale: string;
+      lastSources: { cursor: boolean };
+    };
+    expect(saved.lastStreamKey).toBe("new-key");
+    expect(saved.locale).toBe("ja");
+    expect(saved.lastSources.cursor).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("pushes live app gain/mute updates (F-AU-04)", async () => {
+    vi.useFakeTimers();
+    useStore.setState({ isLive: true, appMix: {}, mic: { device: "default", enabled: true, muted: false, gain: 1.0 } });
+
+    useStore.getState().setAppMix("pid:42", { gain: 0.5, muted: true });
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(updateAudioMixMock).toHaveBeenCalledTimes(1);
+    const mix = updateAudioMixMock.mock.calls[0][0] as {
+      apps: Record<string, { gain: number; muted: boolean }>;
+    };
+    expect(mix.apps["pid:42"]).toEqual({ gain: 0.5, muted: true });
+    vi.useRealTimers();
   });
 });

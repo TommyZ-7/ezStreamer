@@ -37,15 +37,17 @@ struct PortalState {
 static PORTAL: Mutex<Option<PortalState>> = Mutex::new(None);
 
 /// Open the OS picker and remember the chosen stream (F-SC-02 Wayland path).
-pub async fn portal_picker() -> Result<ScreenTarget> {
+/// `cursor` maps to the portal cursor mode (F-SC-04; initial ON).
+pub async fn portal_picker(cursor: bool) -> Result<ScreenTarget> {
     use ashpd::desktop::screencast::{CursorMode, PersistMode, Screencast, SourceType};
 
+    let cursor_mode = if cursor { CursorMode::Embedded } else { CursorMode::Hidden };
     let screencast = Screencast::new().await.map_err(err)?;
     let session = screencast.create_session().await.map_err(err)?;
     let request = screencast
         .select_sources(
             &session,
-            CursorMode::Hidden,
+            cursor_mode,
             SourceType::Monitor | SourceType::Window,
             false,
             None,
@@ -160,6 +162,7 @@ pub fn start_screen(
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let fail_tx = ready_tx.clone();
     let fail = move |msg: String| {
+        crate::logging::error(&format!("pw video: {msg}"));
         eprintln!("pw video: {msg}");
         let _ = fail_tx.send(Err(msg));
     };
@@ -230,6 +233,7 @@ pub fn start_screen(
                     // Error states carry the only visible reason when a
                     // connected stream never delivers (no node, no frames).
                     if let pw::stream::StreamState::Error(e) = new {
+                        crate::logging::error(&format!("pw video: stream error: {e}"));
                         eprintln!("pw video: stream error: {e}");
                     }
                 })

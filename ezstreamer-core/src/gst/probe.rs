@@ -41,15 +41,30 @@ pub fn probe_with_elements(element_names: &[&str]) -> Vec<EncoderInfo> {
             });
         }
     }
-    out.push(EncoderInfo { name: "libx264".into(), usable: true, reason: None });
+    // Software fallback is only usable when its element is actually present;
+    // claiming otherwise made the UI offer libx264 and then fail at start.
+    let soft = has(EncoderSpec::X264.gst_elements());
+    out.push(EncoderInfo {
+        name: "libx264".into(),
+        usable: soft,
+        reason: if soft {
+            None
+        } else {
+            Some("GStreamer plugin not installed (x264enc/openh264enc)".into())
+        },
+    });
     out
 }
 
 /// Probe via a presence predicate (the Tauri backend passes a registry
-/// lookup; tests pass fixtures). Software encoders are always assumed
-/// present so the `libx264` fallback never disappears.
+/// lookup; tests pass fixtures).
 pub fn probe_with(check: impl Fn(&str) -> bool) -> Vec<EncoderInfo> {
-    let mut elements = vec!["x264enc", "openh264enc"];
+    let mut elements = Vec::new();
+    for e in EncoderSpec::X264.gst_elements() {
+        if check(e) {
+            elements.push(*e);
+        }
+    }
     for id in MANUAL_ENCODERS.iter().filter(|id| **id != "auto") {
         if let Some(spec) = EncoderSpec::from_id(id) {
             for e in spec.gst_elements() {
@@ -88,11 +103,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_registry_means_software_only() {
+    fn empty_registry_marks_software_absent() {
         let infos = probe_with_elements(&[]);
         assert_eq!(pick_best(&infos), "libx264");
-        assert!(infos.iter().find(|i| i.name == "libx264").unwrap().usable);
+        assert!(
+            !infos.iter().find(|i| i.name == "libx264").unwrap().usable,
+            "no x264enc/openh264enc in the registry"
+        );
         assert!(!infos.iter().find(|i| i.name == "h264_nvenc").unwrap().usable);
+    }
+
+    #[test]
+    fn openh264_alone_makes_software_usable() {
+        let infos = probe_with_elements(&["openh264enc"]);
+        assert!(infos.iter().find(|i| i.name == "libx264").unwrap().usable);
     }
 
     #[test]
@@ -126,8 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn probe_with_empty_predicate_still_offers_software() {
+    fn probe_with_empty_predicate_marks_software_absent() {
         let infos = probe_with(|_| false);
         assert_eq!(pick_best(&infos), "libx264");
+        assert!(!infos.iter().find(|i| i.name == "libx264").unwrap().usable);
     }
 }

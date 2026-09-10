@@ -104,6 +104,9 @@ jobs:
       - name: Check backend (Windows + GStreamer)
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo check -p ezstreamer
+      - name: Backend tests (Windows + GStreamer)
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo test -p ezstreamer
       - name: Frontend
         if: needs.changes.outputs.docs_only != 'true'
         run: pnpm i && pnpm build && pnpm test

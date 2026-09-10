@@ -113,13 +113,18 @@ pub fn get_audio_devices() -> CmdResult<AudioDevices> {
 
 /// Open the OS screen picker (Linux/Wayland: xdg-desktop-portal ScreenCast).
 /// The chosen stream is remembered backend-side; subsequent start_preview /
-/// start_stream calls capture it without re-picking.
+/// start_stream calls capture it without re-picking. `cursor` follows F-SC-04.
 #[tauri::command]
-pub async fn start_portal_picker() -> CmdResult<ScreenTarget> {
+pub async fn start_portal_picker(cursor: Option<bool>) -> CmdResult<ScreenTarget> {
     #[cfg(target_os = "linux")]
-    return crate::capture::platform::portal_picker().await.map_err(err);
+    return crate::capture::platform::portal_picker(cursor.unwrap_or(true))
+        .await
+        .map_err(err);
     #[cfg(not(target_os = "linux"))]
-    Err(Error::NotImplemented("portal picker (Linux-only)")).map_err(err)
+    {
+        let _ = cursor;
+        Err(Error::NotImplemented("portal picker (Linux-only)")).map_err(err)
+    }
 }
 
 // ---------- config ----------
@@ -137,8 +142,8 @@ pub fn save_profiles(cfg: ProfilesConfig) -> CmdResult<()> {
             format!("{id}: video {}/audio {}kbps exceeds limits ({}k/{}k)", p.v_kbps, p.a_kbps, MAX_VIDEO_KBPS, MAX_AUDIO_KBPS)
         })?;
     }
-    if !cfg.ingest_url.starts_with("rtmp://") {
-        return Err("ingest URL must start with rtmp://".into());
+    if !(cfg.ingest_url.starts_with("rtmp://") || cfg.ingest_url.starts_with("rtmps://")) {
+        return Err("ingest URL must start with rtmp:// or rtmps://".into());
     }
     let path = config::config_path();
     config::save(&path, &cfg).map_err(err)
@@ -210,7 +215,7 @@ fn launch_pipeline(
         &sess.cfg.screen,
         &sess.profile,
         vsink,
-        false,
+        sess.cfg.cursor,
     )
     .map_err(err)?;
     #[cfg(windows)]
@@ -220,10 +225,12 @@ fn launch_pipeline(
     *state.screen.lock().unwrap() = Some(handle);
 
     let audio_cap =
-        crate::capture::platform::start_audio(&sess.cfg.audio, asink).map_err(|e| {
-            stop_capture_backends(state);
-            err(e)
-        })?;
+        crate::capture::platform::start_audio(&sess.cfg.audio, asink, Some(app.clone())).map_err(
+            |e| {
+                stop_capture_backends(state);
+                err(e)
+            },
+        )?;
     *state.audio_cap.lock().unwrap() = Some(audio_cap);
 
     super::gst_stream::spawn_pipeline(sess.plan.clone(), video_rx, audio_rx, retry).map_err(|e| {
@@ -313,6 +320,17 @@ pub fn start_stream(
         )
         .map_err(err)?;
 
+        crate::logging::info(&format!(
+            "start_stream: profile={} {}x{}@{} encoder_override={} cursor={} ingest={}",
+            profile.name,
+            profile.w,
+            profile.h,
+            profile.fps,
+            cfg.encoder_override,
+            cfg.cursor,
+            cfg.ingest_url
+        ));
+
         // initial mixer state from the UI selection
         let mixer = Arc::new(Mutex::new(ezstreamer_core::audio::Mixer {
             apps: cfg
@@ -320,9 +338,18 @@ pub fn start_stream(
                 .apps
                 .iter()
                 .map(|a| {
+                    let g = cfg
+                        .app_mix
+                        .get(a)
+                        .copied()
+                        .unwrap_or(SourceGain { gain: 1.0, muted: false });
                     (
                         a.clone(),
-                        ezstreamer_core::audio::SourceState { gain: 1.0, muted: false, enabled: true },
+                        ezstreamer_core::audio::SourceState {
+                            gain: g.gain,
+                            muted: g.muted,
+                            enabled: true,
+                        },
                     )
                 })
                 .collect(),
@@ -337,7 +364,14 @@ pub fn start_stream(
                 .audio
                 .apps
                 .iter()
-                .map(|a| (a.clone(), SourceGain { gain: 1.0, muted: false }))
+                .map(|a| {
+                    let g = cfg
+                        .app_mix
+                        .get(a)
+                        .copied()
+                        .unwrap_or(SourceGain { gain: 1.0, muted: false });
+                    (a.clone(), g)
+                })
                 .collect(),
             mic: MicUpdate {
                 enabled: cfg.audio.mic.enabled,
@@ -379,6 +413,7 @@ pub fn stop_stream(state: State<'_, AppState>) -> CmdResult<()> {
     *state.active_mixer.lock().unwrap() = None;
     *state.session.lock().unwrap() = None;
     stop_preview_impl(&state);
+    crate::logging::info("stop_stream");
     Ok(())
 }
 
@@ -439,6 +474,10 @@ fn spawn_retry_thread(app: tauri::AppHandle, first_retry: u32) {
             use tauri::Manager;
             let state = app.state::<AppState>();
             for n in first_retry..=MAX_RETRIES {
+                crate::logging::info(&format!(
+                    "stream retry {n}/{MAX_RETRIES}: waiting {}ms",
+                    retry_backoff_ms(n - 1)
+                ));
                 std::thread::sleep(Duration::from_millis(retry_backoff_ms(n - 1)));
                 // user stop cancels the pending retry
                 if state.retrying.lock().unwrap().is_none() {
@@ -450,14 +489,17 @@ fn spawn_retry_thread(app: tauri::AppHandle, first_retry: u32) {
                     Ok(proc) => {
                         *state.stream.lock().unwrap() = Some(proc);
                         *state.retrying.lock().unwrap() = None;
+                        crate::logging::info(&format!("stream retry {n}/{MAX_RETRIES}: reconnected"));
                         return;
                     }
                     Err(e) => {
+                        crate::logging::error(&format!("stream retry {n}/{MAX_RETRIES} failed: {e}"));
                         eprintln!("stream retry {n}/{MAX_RETRIES} failed: {e}");
                     }
                 }
             }
             // retries exhausted → stop (design §9: 3回失敗で停止)
+            crate::logging::error("stream retries exhausted; giving up");
             *state.retrying.lock().unwrap() = None;
             stop_capture_backends(&state);
             *state.session.lock().unwrap() = None;
@@ -510,7 +552,7 @@ pub fn start_preview(
             &cfg.screen,
             &preview_profile,
             vsink,
-            false,
+            cfg.cursor,
         )
         .map_err(err)?;
         *slot = Some(screen);
@@ -570,6 +612,23 @@ pub fn update_audio_mix(state: State<'_, AppState>, mix: AudioMixUpdate) -> CmdR
 }
 
 // ---------- misc ----------
+
+/// Design §9: release capture/stream resources on app exit so the RTMP
+/// connection and capture backends are torn down deterministically.
+pub fn shutdown(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        if let Some(mut p) = state.stream.lock().unwrap().take() {
+            p.stop();
+        }
+    }
+    stop_capture_backends(&state);
+    stop_preview_impl(&state);
+    *state.session.lock().unwrap() = None;
+    crate::logging::info("app exit: capture/pipeline stopped");
+}
 
 #[tauri::command]
 pub fn copy_to_clipboard(text: String) -> CmdResult<()> {

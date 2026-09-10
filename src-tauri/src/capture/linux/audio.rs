@@ -13,6 +13,7 @@ use pw::spa::pod::Pod;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use tauri::Emitter;
 
 fn err<E: std::fmt::Display>(e: E) -> CaptureError {
     CaptureError::Failed(e.to_string())
@@ -59,8 +60,18 @@ fn audio_source_specs(selection: &AudioSelection) -> Vec<(String, Option<String>
     }
     if selection.mic.enabled {
         let dev = selection.mic.device.clone();
-        let target = if dev == "default" { None } else { Some(dev) };
-        specs.push((ezstreamer_core::audio::MIC_ID.into(), target, false));
+        // Device ids are `pw:<node>` (Portal-style) or raw node ids; the
+        // PipeWire property wants the bare numeric node id.
+        let target = if dev == "default" || dev.is_empty() {
+            None
+        } else {
+            Some(dev.rsplit(':').next().unwrap_or(dev.as_str()).to_string())
+        };
+        specs.push((
+            ezstreamer_core::audio::MIC_ID.into(),
+            target,
+            false,
+        ));
     }
     if selection.mode == "apps" {
         for app in &selection.apps {
@@ -74,11 +85,15 @@ fn audio_source_specs(selection: &AudioSelection) -> Vec<(String, Option<String>
     specs
 }
 
-pub fn start_audio(selection: &AudioSelection, sink: AudioSink) -> Result<AudioCapture> {
+pub fn start_audio(
+    selection: &AudioSelection,
+    sink: AudioSink,
+    app: Option<tauri::AppHandle>,
+) -> Result<AudioCapture> {
     let specs = audio_source_specs(selection);
     if specs.is_empty() {
         return Err(CaptureError::Failed(
-            "音声ソースが選択されていません".into(),
+            "no audio source selected".into(),
         ));
     }
 
@@ -92,7 +107,17 @@ pub fn start_audio(selection: &AudioSelection, sink: AudioSink) -> Result<AudioC
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let fail_tx = ready_tx.clone();
     let fail = move |msg: String| {
+        crate::logging::error(&format!("pw audio: {msg}"));
         eprintln!("pw audio: {msg}");
+        if let Some(app) = &app {
+            let _ = app.emit(
+                "stream://error",
+                ezstreamer_core::ipc_types::StreamError {
+                    code: "audio".into(),
+                    msg: msg.clone(),
+                },
+            );
+        }
         let _ = fail_tx.send(Err(msg));
     };
 
@@ -173,6 +198,7 @@ pub fn start_audio(selection: &AudioSelection, sink: AudioSink) -> Result<AudioC
                         // Error states carry the only visible reason when a
                         // connected stream never delivers (no node, no samples).
                         if let pw::stream::StreamState::Error(e) = new {
+                            crate::logging::error(&format!("pw audio: stream error {ud_id}: {e}"));
                             eprintln!("pw audio: stream error {ud_id}: {e}");
                         }
                     })
@@ -371,7 +397,7 @@ mod tests {
                     gain: 1.0,
                 },
             };
-            let mut cap = match start_audio(&sel, asink) {
+            let mut cap = match start_audio(&sel, asink, None) {
                 Ok(c) => c,
                 Err(_) => {
                     assert!(!daemon, "start_audio failed despite a live daemon");

@@ -14,22 +14,35 @@ export function ProfileSelector() {
   const encoders = useStore((s) => s.encoders);
   const encodersLoading = useStore((s) => s.encodersLoading);
 
-  const profile = profiles?.profiles[profileId];
+  const allProfiles = profiles?.profiles ?? {};
+  const allIds = Object.keys(allProfiles);
+  // Built-ins first, then custom profiles (F-EN-02: custom profiles must be
+  // selectable here, not only editable in Settings).
+  const orderedIds = [
+    ...BUILTIN_IDS.filter((id) => allIds.includes(id)),
+    ...allIds.filter((id) => !BUILTIN_IDS.includes(id)),
+  ];
+  const profile = allProfiles[profileId];
   const overBitrate =
     profile != null && (profile.v_kbps > MAX_VIDEO_KBPS || profile.a_kbps > MAX_AUDIO_KBPS);
+  const warn = profile?.warn
+    ? t(profile.warn, { defaultValue: t("profile.warn1080p") })
+    : profileId === "1080p"
+      ? t("profile.warn1080p")
+      : null;
 
   return (
     <section className="space-y-2">
       <h2 className="text-sm font-semibold text-zinc-400">{t("profile.tab")}</h2>
       <div className="flex flex-wrap gap-2 text-sm">
-        {BUILTIN_IDS.map((id) => {
-          const p = profiles?.profiles[id];
-          if (!p) return null;
-          const is1080 = id === "1080p";
+        {orderedIds.map((id) => {
+          const p = allProfiles[id];
+          const label = p.name.startsWith("profile.") ? t(p.name) : p.name;
+          const highRes = id === "1080p" || p.w >= 1920;
           return (
             <button
               key={id}
-              title={is1080 ? t("profile.warn1080p") : undefined}
+              title={p.warn ? t(p.warn, { defaultValue: t("profile.warn1080p") }) : undefined}
               className={`rounded border px-3 py-1 ${
                 profileId === id
                   ? "border-sky-500 bg-sky-900/40"
@@ -37,8 +50,8 @@ export function ProfileSelector() {
               }`}
               onClick={() => setProfileId(id)}
             >
-              {t(`profile.${is1080 ? "p1080" : id}`)}
-              {is1080 && <span className="ml-1 text-amber-400">⚠</span>}
+              {label}
+              {highRes && <span className="ml-1 text-amber-400">⚠</span>}
             </button>
           );
         })}
@@ -48,7 +61,7 @@ export function ProfileSelector() {
           </span>
         )}
       </div>
-      {profile?.warn && <p className="text-xs text-amber-500">{t("profile.warn1080p")}</p>}
+      {warn && <p className="text-xs text-amber-500">{warn}</p>}
       {overBitrate && <p className="text-xs font-semibold text-red-500">{t("profile.overBitrate")}</p>}
 
       <label className="flex items-center gap-2 text-sm">
@@ -59,16 +72,20 @@ export function ProfileSelector() {
           onChange={(e) => setEncoderOverride(e.target.value)}
         >
           <option value="auto">{t("profile.auto")}</option>
-          {encoders
-            .filter((e) => e.name !== "libx264" || e.usable)
-            .map((e) => (
-              <option key={e.name} value={e.name} disabled={!e.usable}>
-                {e.name}
-                {e.reason ? ` (${e.reason})` : ""}
-              </option>
-            ))}
-          <option value="libx264">libx264</option>
-          <option value="h264_vulkan">h264_vulkan</option>
+          {encoders.map((e) => (
+            <option key={e.name} value={e.name} disabled={!e.usable}>
+              {e.name}
+              {e.reason ? ` (${e.reason})` : ""}
+            </option>
+          ))}
+          {/* Software/HW ids stay selectable even when the probe has not run
+              or failed; a missing element fails at start with a clear error. */}
+          {!encoders.some((e) => e.name === "libx264") && (
+            <option value="libx264">libx264</option>
+          )}
+          {!encoders.some((e) => e.name === "h264_vulkan") && (
+            <option value="h264_vulkan">h264_vulkan</option>
+          )}
         </select>
       </label>
       {encodersLoading && (

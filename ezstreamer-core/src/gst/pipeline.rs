@@ -95,23 +95,32 @@ impl EncoderSpec {
         let bitrate = profile.v_kbps.to_string();
         match self {
             Self::Nvenc => vec![
-                ("preset".into(), "low-latency".into()),
+                // Requirement §2.2: the NVENC "Low Latency" preset caused
+                // gray-screen playback on VRChat, so Booth's "Max Performance"
+                // tuning is used instead (high-performance).
+                ("preset".into(), "high-performance".into()),
                 ("rc-mode".into(), "cbr".into()),
                 ("bitrate".into(), bitrate),
                 ("gop-size".into(), gop),
                 ("bframes".into(), "0".into()),
+                ("profile".into(), "high".into()),
+                // Booth low-latency tuning: look-ahead OFF, zerolatency off.
+                ("rc-lookahead".into(), "0".into()),
+                ("zerolatency".into(), "false".into()),
             ],
             Self::Qsv => vec![
                 ("bitrate".into(), bitrate),
                 ("gop-size".into(), gop),
                 ("bframes".into(), "0".into()),
                 ("rate-control".into(), "cbr".into()),
+                ("profile".into(), "high".into()),
             ],
             Self::Amf => vec![
                 ("bitrate".into(), bitrate),
                 ("gop-size".into(), gop),
                 ("bframes".into(), "0".into()),
                 ("rate-control".into(), "cbr".into()),
+                ("profile".into(), "high".into()),
             ],
             Self::Vaapi => vec![
                 ("bitrate".into(), bitrate),
@@ -123,6 +132,7 @@ impl EncoderSpec {
                 ("b-frames".into(), "0".into()),
                 ("bframes".into(), "0".into()),
                 ("rate-control".into(), "cbr".into()),
+                ("profile".into(), "high".into()),
             ],
             // `vulkanh264enc` sink is NV12 VulkanImage (see topology note).
             // Verified on GStreamer 1.28.7: no `keyframe-period`/`gop-size`;
@@ -136,6 +146,7 @@ impl EncoderSpec {
                 ("keyframe-period".into(), gop),
                 ("b-frames".into(), "0".into()),
                 ("bframes".into(), "0".into()),
+                ("profile".into(), "high".into()),
             ],
             // x264enc takes kbit/s; tune zerolatency is BANNED (Topaz gray-screen
             // regression) — use sliced-threads/sync-lookahead/scene-cut off only.
@@ -143,13 +154,33 @@ impl EncoderSpec {
                 ("bitrate".into(), bitrate),
                 ("key-int-max".into(), gop),
                 ("bframes".into(), "0".into()),
-                (" cabac".trim().into(), "true".into()),
+                ("cabac".into(), "true".into()),
+                ("pass".into(), "cbr".into()),
+                ("profile".into(), "high".into()),
                 (
                     "option-string".into(),
                     "sliced-threads=1:sync-lookahead=0:scenecut=0".into(),
                 ),
             ],
         }
+    }
+
+    /// Encoder properties for a concrete element factory. The generic set
+    /// above targets the primary element of each spec; the `openh264enc`
+    /// fallback needs different names and units (bitrate is **bits/s** there,
+    /// not kbit/s) or it would encode at ~1.5kbps and ignore the 2s GOP.
+    pub fn gst_props_for(self, element: &str, profile: &Profile) -> Vec<(String, String)> {
+        if self == Self::X264 && element == "openh264enc" {
+            let mut props = vec![
+                ("bitrate".into(), (profile.v_kbps * 1000).to_string()),
+                ("rate-control".into(), "bitrate".into()),
+                ("gop-size".into(), profile.gop().to_string()),
+            ];
+            // openh264 only has baseline/main profiles; only set when present.
+            props.push(("profile".into(), "main".into()));
+            return props;
+        }
+        self.gst_props(profile)
     }
 }
 
@@ -214,8 +245,13 @@ pub fn build_plan(
 ) -> Result<StreamPlan> {
     validate_bitrate(profile.v_kbps, profile.a_kbps)?;
     let key = stream_key.trim();
-    if key.len() < 3 {
-        return Err(Error::StreamKey("key must be at least 3 chars".into()));
+    // F-ST-01 full validation (charset + 3..=64) also protects the RTMP URL.
+    crate::config::validate_stream_key(key)?;
+    let ingest = ingest_url.trim().trim_end_matches('/');
+    if !(ingest.starts_with("rtmp://") || ingest.starts_with("rtmps://")) {
+        return Err(Error::Config(format!(
+            "ingest URL must start with rtmp:// or rtmps://: {ingest_url}"
+        )));
     }
     let spec = resolve_encoder(encoder_override, available)?;
     let element = preferred_element
@@ -231,7 +267,7 @@ pub fn build_plan(
         v_kbps: profile.v_kbps,
         a_kbps: profile.a_kbps,
         gop: profile.gop(),
-        rtmp_url: format!("{}/{}", ingest_url.trim_end_matches('/'), key),
+        rtmp_url: format!("{ingest}/{key}"),
     })
 }
 
@@ -241,16 +277,19 @@ pub fn build_plan(
 pub fn build_launch_string(plan: &StreamPlan) -> String {
     let enc_props = plan
         .encoder
-        .gst_props(&Profile {
-            name: String::new(),
-            w: plan.w,
-            h: plan.h,
-            fps: plan.fps,
-            v_kbps: plan.v_kbps,
-            a_kbps: plan.a_kbps,
-            encoder: "auto".into(),
-            warn: None,
-        })
+        .gst_props_for(
+            &plan.encoder_element,
+            &Profile {
+                name: String::new(),
+                w: plan.w,
+                h: plan.h,
+                fps: plan.fps,
+                v_kbps: plan.v_kbps,
+                a_kbps: plan.a_kbps,
+                encoder: "auto".into(),
+                warn: None,
+            },
+        )
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
@@ -359,11 +398,50 @@ mod tests {
     }
 
     #[test]
+    fn invalid_chars_and_bad_ingest_rejected() {
+        let err = build_plan(
+            &mid(),
+            "auto",
+            &avail(),
+            "rtmp://topaz.chat/live",
+            "bad key!",
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::StreamKey(_)));
+        let err = build_plan(&mid(), "auto", &avail(), "http://x/live", "abc", None).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    #[test]
     fn nvenc_props_have_no_bframes_and_cbr() {
         let props = EncoderSpec::Nvenc.gst_props(&mid());
         let get = |k: &str| props.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("bframes"), Some("0"));
         assert_eq!(get("rc-mode"), Some("cbr"));
+        // Requirements §2.2: "Low Latency" preset is forbidden (gray screen).
+        assert_eq!(get("preset"), Some("high-performance"));
+        assert_ne!(get("preset"), Some("low-latency"));
+        assert_eq!(get("profile"), Some("high"));
+        assert_eq!(get("rc-lookahead"), Some("0"));
+        assert_eq!(get("zerolatency"), Some("false"));
+    }
+
+    #[test]
+    fn openh264enc_gets_bps_bitrate_and_gop() {
+        let props = EncoderSpec::X264.gst_props_for("openh264enc", &mid());
+        let get = |k: &str| props.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        // openh264enc bitrate is bits/s, not the kbit/s x264enc takes.
+        assert_eq!(get("bitrate"), Some("1500000"));
+        assert_eq!(get("rate-control"), Some("bitrate"));
+        assert_eq!(get("gop-size"), Some("60"));
+        // x264-only properties must not leak into the openh264 element.
+        assert_eq!(get("key-int-max"), None);
+        assert_eq!(get("option-string"), None);
+        // x264enc keeps kbit/s and the tuned option string.
+        let x264 = EncoderSpec::X264.gst_props_for("x264enc", &mid());
+        assert!(x264.iter().any(|(k, v)| k == "bitrate" && v == "1500"));
+        assert!(x264.iter().any(|(k, _)| k == "pass"));
     }
 
     #[test]

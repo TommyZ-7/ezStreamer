@@ -4,13 +4,14 @@ mod capture;
 #[cfg(windows)]
 mod gst_preload;
 mod ipc;
+mod logging;
 
 use ipc::commands::AppState;
 
 fn main() {
     #[cfg(windows)]
     gst_preload::preload_bundled_gstreamer_dlls();
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             ipc::commands::ping,
@@ -31,6 +32,11 @@ fn main() {
             ipc::commands::copy_to_clipboard,
             ipc::commands::open_logs_dir,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ezStreamer");
+        .build(tauri::generate_context!())
+        .expect("error while building ezStreamer");
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            ipc::commands::shutdown(app_handle);
+        }
+    });
 }

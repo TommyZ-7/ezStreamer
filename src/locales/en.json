@@ -13,6 +13,7 @@
     "tab": "Screen",
     "display": "Full screen",
     "window": "Window",
+    "cursor": "Show cursor",
     "portalPicker": "Pick via Portal dialog",
     "notAvailable": "Screen capture is not available in this build"
   },
@@ -22,7 +23,10 @@
     "apps": "Per-app",
     "mic": "Microphone",
     "gain": "Volume",
-    "mute": "Mute"
+    "mute": "Mute",
+    "master": "Master",
+    "noApps": "No applications detected",
+    "liveHint": "Mute/volume changes apply immediately while live"
   },
   "profile": {
     "tab": "Output",
@@ -46,6 +50,8 @@
     "copied": "Copied",
     "start": "Start stream",
     "stop": "Stop stream",
+    "bitrate": "Bitrate",
+    "dropped": "Dropped",
     "previewStart": "Start preview",
     "previewStop": "Stop preview",
     "previewNeedsSource": "Pick a screen to enable preview",
@@ -63,6 +69,14 @@
     "vKbps": "Video kbps",
     "aKbps": "Audio kbps",
     "duplicate": "Duplicate",
-    "delete": "Delete"
+    "delete": "Delete",
+    "add": "Add",
+    "export": "Export",
+    "import": "Import",
+    "importLoaded": "Loaded (Save to apply)",
+    "importError": "Import failed"
+  },
+  "warn": {
+    "topaz1080p": "At Topaz's 2000kbps cap, quality suffers. 720p recommended"
   }
 }
