@@ -1,17 +1,20 @@
-# ezStreamer 詳細設計書 v0.2
+# ezStreamer 詳細設計書 v0.3
 
-> 作成日: 2026-09-04 | 更新日: 2026-09-10 | 要件定義書: `docs/requirements.md` v0.2 対応 | ステータス: Draft
+> 作成日: 2026-09-04 | 更新日: 2026-09-11 | 要件定義書: `docs/requirements.md` v0.2 対応 | ステータス: Draft
 > 派生元: ezTopaz 詳細設計書 v0.2。キャプチャ・ミキシング・UIは継承し、FFmpeg sidecar連携 (§4) とエンコーダprobe (§8.1) をGStreamer化。
 > v0.2 (2026-09-10): Linux (Portal ScreenCast + PipeWire / Flatpak) 対応を追記。実装レビュー修正
 > (NVENC `high-performance`、映像PTSの実時間化、appsrc backpressure、openh264enc単位、ファイルログ、
 > 設定永続化、カーソル、per-app音量UI、プロファイル入出力) を反映。
+> v0.3 (2026-09-11): GUI を Tauri + React から **ネイティブ egui/eframe** へ移行 (§2, §5, §6)。
+> UI要件として「直線的でつながりのあるレイアウト」「絵文字・グラデーション禁止」を追加。NSIS は
+> 自作スクリプト (`packaging/windows/ezstreamer.nsi`) で生成し、IPC/フロントエンドビルドを廃止。
 
 ---
 
 ## 1. 設計方針
 
 - **YAGNI徹底:** 録画/シーン合成/自動更新/テレメトリは作らない。画面は全画面/単一ウィンドウ、音声は「システム or アプリ複数 + マイク」で割り切る
-- **Windows + Linux:** `cfg(windows)` はWGC+WASAPI、`cfg(target_os = "linux")` はPortal ScreenCast + PipeWire。それ以外のホストはstub。非対応ホストでも `cargo test` / `cargo check` / `pnpm build` が通る
+- **Windows + Linux:** `cfg(windows)` はWGC+WASAPI、`cfg(target_os = "linux")` はPortal ScreenCast + PipeWire。それ以外のホストはstub。非対応ホストでも `cargo test` / `cargo check` / `cargo check --no-default-features` が通る (media feature分離, §2.3)
 - **GStreamerはプロセス内:** sidecarプロセス・named pipe・stderrパース廃止。Rustキャプチャ → `appsrc` 2本 → エンコード → `flvmux` → `rtmp2sink`
 - **フレーム供給はRustが司る:** WGC/Portalはコンテンツ変化時のみフレームを出す。Rust側で「最終フレームのfps複製送出」と「プロファイル解像度への正規化」を行い、`appsrc` のcapsを起動中不変に保つ(§3.1.3)
 - **x264 `zerolatency` / NVENC `Low Latency` 禁止:** Topaz灰色画面の既知不具合。tune系は使わず B-frames 0 / GOP 2s / CBR を明示し、NVENCは `preset=hp` (High Performance) を使う
@@ -24,16 +27,17 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  React UI (Vite + Tailwind, ja/en)                     │
-│   Header / ScreenSelector / AudioSelector /            │
-│   ProfileSelector / StreamControl / LogView            │
+│  egui UI (eframe, ja/en, native)                        │
+│   Header / StepRail / Screen / Audio / Output /         │
+│   StreamDock / Settings                                 │
 └──────────────────────┬──────────────────────────────────┘
-                        │ Tauri IPC (invoke/event)
+              Rust channels (Command / UiEvent)
 ┌──────────────────────▼──────────────────────────────────┐
-│  Rust Backend (Tauri 2, Windows)                         │
+│  Rust Backend (worker thread)                            │
 │  ┌──────────────┐  ┌────────────┐  ┌─────────────────┐  │
 │  │CaptureManager│──│AudioMixer  │──│  GstPipeline    │  │
 │  │ WGC / WASAPI │  │(Rust合成)  │  │ (in-process)    │  │
+│  │ Portal/PipeW │  │            │  │                 │  │
 │  └──────┬───────┘  └─────┬──────┘  └────────┬────────┘  │
 │         │                │                  │            │
 │   ┌─────▼─────┐    ┌─────▼─────┐    ┌──────▼──────┐     │
@@ -50,29 +54,31 @@
 
 | 層 | 技術 | バージョン/備考 |
 |---|---|---|
-| Backend | Tauri 2 + Rust | `tauri 2.x` |
-| Frontend | React + TypeScript + Vite + Tailwind | `react 18`, `zustand` 状態管理 |
+| GUI | **Rust + egui/eframe (glow)** | `eframe 0.32`。webview/Node ツールチェーン不要 |
+| バックエンド | Rust (Tauriなし。専用workerスレッド) | capture/GStreamer/config を所有 |
 | 画面 | `windows-rs 0.52` (WGC) / `ashpd 0.7` + `pipewire 0.10` | Win: 全画面 `CreateForMonitor` / ウィンドウ `CreateForWindow`。Linux: Portal ScreenCast の Pickers |
 | 音声 | WASAPI (自前, `windows` crate) / PipeWire | Win: per-appはプロセスループバック (2004+)。Linux: system=monitor / app=node target / mic=Audio/Source |
 | エンコード〜送信 | GStreamer (`gstreamer`/`gstreamer-app`/`gstreamer-video` 0.23, MSVCランタイム同梱) | §4 |
 | 設定 | `serde_json` | `%APPDATA%/ezStreamer/profiles.json` |
-| i18n | `i18next` (React) | ja/en |
+| i18n | 同梱 JSON (`assets/locales/ja.json`/`en.json`) | egui UI から直接参照 |
+| フォント | Noto Sans JP (subset OTF) 同梱 | 絵文字フォントは読み込まない |
 
 ### 2.3 構成 (Cargo workspace)
 
 ```
 ezStreamer/
- ├─ Cargo.toml            # workspace (ezstreamer-core + src-tauri)
- ├─ ezstreamer-core/      # 純粋ロジック (config / gst pipeline・probe / mixer / pacer / 共有型)
+ ├─ Cargo.toml            # workspace (ezstreamer-core + ezstreamer-app)
+ ├─ ezstreamer-core/      # 純粋ロジック (config / gst pipeline・probe / mixer / pacer / urls / 共有型)
  │                        #   プラットフォーム非依存。cargo test がどのOSでも通る
- ├─ src-tauri/            # Tauri glue + キャプチャ (Windows/Linux) + GstPipeline実行
- │   ├─ src/main.rs
- │   ├─ src/logging.rs    # 日付別ファイルログ (F-CF-04)
- │   ├─ src/ipc/          # commands.rs / gst_stream.rs
+ ├─ ezstreamer-app/       # egui UI + キャプチャ (Windows/Linux) + GstPipeline実行
+ │   ├─ src/main.rs       # eframe エントリ / DLL preload
+ │   ├─ src/backend/      # workerループ (旧Tauri IPCに相当) + GstStream
  │   ├─ src/capture/      # windows/ (WGC+WASAPI) / linux/ (Portal+PipeWire)
- │   └─ icons/
- ├─ src/                  # React frontend
- └─ src-tauri/resources/  # licenses/ + gstreamer/ (CIがランタイム subset を配置)
+ │   ├─ src/ui/           # egui シェル / theme / i18n / views
+ │   ├─ assets/           # locales + Noto Sans JP
+ │   ├─ icons/
+ │   └─ resources/        # licenses/ + gstreamer/ (CIがランタイム subset を配置)
+ └─ packaging/windows/    # NSIS スクリプト (ezstreamer.nsi)
 ```
 
 ---
@@ -86,7 +92,7 @@ ezStreamer/
 | 全画面 | `WGC: GraphicsCaptureItem::CreateForMonitor` | マルチモニタは `HMONITOR` 列挙 |
 | ウィンドウ | `WGC: CreateForWindow(HWND)` | 最小化ウィンドウは警告。`ddagrab` は廃止 (GStreamerにデバイス入力は使わず `appsrc` 統一) |
 | カーソル | `GraphicsCaptureSession::IncludeCursor` | ON/OFF切替 |
-| プレビュー | Rust側で 640x360 に縮小 → 1fps に間引き `base64 PNG` を `event` でReactへ送信 | GStreamer経由しない |
+| プレビュー | Rust側で 640x360 に縮小 → 1fps に間引き 生RGBA を `UiEvent::Preview` でeguiへ送信 | GStreamer経由しない |
 
 ### 3.1.3 フレーム供給ポリシー
 
@@ -105,7 +111,7 @@ WGCはフレームをコンテンツ変化時にのみ供給し、かつソー�
 
 - **選択:** xdg-desktop-portal ScreenCast (`ashpd 0.7`)。OSピッカーで monitor/window を選択し、PipeWire remote fd と node id を取得する (アプリ側のウィンドウ列挙は行わない)。カーソルは `CursorMode` (`Embedded`/`Hidden`、初期ON)
 - **取得:** 専用スレッドで PipeWire `ThreadLoop` + `StreamBox` を動かし、`process` コールバックで BGRA を取得 → `scale_bgra` でプロファイル解像度へ → `VideoSink`
-- **プレビュー:** 最新フレームを1枚保持し、別スレッドが1fpsで 640x360 PNG へ変換して `stream://preview` を emit
+- **プレビュー:** 最新フレームを1枚保持し、別スレッドが1fpsで 640x360 RGBA へ変換して `UiSink` 経由でUIへ送る
 - **セッション:** Portal state は `static` に保持し preview→stream で再利用。プロセス再起動後は再ピッカーが必要 (永続化しない)
 - **注意:** PipeWire オブジェクト操作は loop lock を保持して行い、停止は自前 condvar で worker に通知する (生ポインタを跨いだ停止をしない)
 
@@ -122,14 +128,14 @@ WGCはフレームをコンテンツ変化時にのみ供給し、かつソー�
 - **マイク:** `Audio/Source`（Virtual含む）node を列挙し、選択時は `TARGET_OBJECT=<node id>`。未指定は既定ソース
 - **データ経路:** `process` コールバックで F32LE を読み、`AudioSink::push(id, samples)` へ
 - **Flatpak:** native PipeWire socket が必要 (`--filesystem=xdg-run/pipewire-0`)。`--socket=pulseaudio` だけでは PipeWire API から見えない
-- **失敗時:** setup失敗は fail-fast で `Err`、稼働後のストリームエラーは `stream://error` + ログ
+- **失敗時:** setup失敗は fail-fast で `Err`、稼働後のストリームエラーは `UiEvent::Error` + ログ
 
 ### 3.2.3 音声ミキシング (Rust側で完結)
 
 ```
 [Chrome PCM 48k f32] ─┐
 [Spotify PCM 48k f32] ─┼─> Rust Mixer (f32加算 + clamp + ゲイン) ─> audio_rx ─> appsrc name=audio_src
-[Mic PCM 48k f32] ─────┘        ↕ VU計算(peak/rms) はここで算出し event でReactへ
+[Mic PCM 48k f32] ─────┘        ↕ VU計算(peak/rms) はここで算出し Shared 経由でUIへ
 ```
 
 - **ゲイン/ミュート:** 各ソースに `gain: f32 (0.0-2.0)` と `muted: bool`。`VU` は 50ms ごとに計算
@@ -185,59 +191,83 @@ flvmux name=mux streamable=true → rtmp2sink location=rtmp://…/{key}
 
 ---
 
-## 5. Tauri IPC設計 (ezTopaz継承 + Linux Portalピッカー)
+## 5. UI ⇄ バックエンド ブリッジ (egui)
 
-### 5.1 Commands (invoke)
+Tauri IPC (`invoke`/`event`) は廃止。UI (egui) とバックエンドワーカーは
+コマンドチャネル1本 + イベントチャネル1本で接続する (§2.1)。
 
-```rust
-#[tauri::command] fn get_displays() -> Result<Vec<Display>, String>
-#[tauri::command] fn get_windows() -> Result<Vec<WindowInfo>, String>
-#[tauri::command] fn get_audio_devices() -> Result<AudioDevices, String>
-#[tauri::command] fn get_profiles() -> Result<ProfilesConfig, String>
-#[tauri::command] fn save_profiles(cfg: ProfilesConfig) -> Result<(), String>
-#[tauri::command] fn probe_encoders(app: AppHandle) -> Result<Vec<EncoderInfo>, String>
-#[tauri::command] fn start_stream(cfg: StreamConfig) -> Result<(), String>
-#[tauri::command] fn stop_stream() -> Result<(), String>
-#[tauri::command] fn start_preview(cfg: StreamConfig) -> Result<(), String>
-#[tauri::command] fn stop_preview() -> Result<(), String>
-#[tauri::command] fn update_audio_mix(mix: AudioMixUpdate) -> Result<(), String>
-#[tauri::command] fn get_status() -> Result<StreamStatus, String>
-#[tauri::command] fn get_vu() -> Result<VuMeter, String>
-#[tauri::command] fn copy_to_clipboard(text: String) -> Result<(), String>
-#[tauri::command] fn open_logs_dir() -> Result<(), String> // explorer/xdg-openで開く
-#[tauri::command] async fn start_portal_picker(cursor: Option<bool>) -> Result<ScreenTarget, String> // Linuxのみ
-```
-
-### 5.2 Events (listen)
+### 5.1 Commands (UI → worker)
 
 ```rust
-emit("stream://status", StreamStatus { is_live, duration_sec, bitrate_kbps, dropped_frames })
-emit("stream://vu", VuMeter { ... })          // 50ms
-emit("stream://preview", PreviewFrame { data_url, w, h }) // 配信前 1fps
-emit("stream://log", LogLine { level, msg })  // bus ERROR/EOS要約
-emit("stream://error", StreamError { code, msg })
+enum Command {
+    LoadAll, RefreshSources, ProbeEncoders,
+    SaveConfig(ProfilesConfig),
+    StartPreview(StreamConfig), StopPreview,
+    StartStream(StreamConfig), StopStream,
+    PortalPicker { cursor: bool },
+    UpdateMix(AudioMixUpdate),
+    OpenDir(PathBuf), Shutdown,
+}
 ```
 
-### 5.3 型定義 — ezTopazと同一 (`StreamConfig` の `hw_direct`/`direct_input` は旧キーとして読込互換のみ)
+- ワーカーは単一スレッドでコマンドを直列実行。パイプライン起動/停止・Portal
+  ピッカー・デバイス列挙・エンコーダprobe はワーカーまたは補助スレッド上で
+  動き、UIスレッドを塞がない。
+- 画面/音声/プロファイル/URL/ロケールの変更は UI 側で 400ms debounce し、
+  `SaveConfig` に集約する (F-CF-02)。
 
-v0.2追加: `StreamConfig.cursor` (F-SC-04) と `StreamConfig.appMix` (F-AU-04、配信開始時のper-app gain/mute)。`stream://error` はキャプチャ初期化/停止失敗でも発火する。
+### 5.2 Events (worker → UI)
+
+```rust
+enum UiEvent {
+    Config(ProfilesConfig), Displays(..), Windows(..), AudioDevices(..), Encoders(..),
+    Preview { rgba, w, h },          // 配信前 1fps、生RGBA
+    StreamStarted, StreamStopped, PreviewStarted, PreviewStopped,
+    PortalPicked(ScreenTarget),
+    Toast(String), Error(String),
+}
+```
+
+- UI は毎フレーム `try_recv` で drain。プレビューRGBAは `egui::ColorImage` →
+  テクスチャへアップロードする (PNG/base64は廃止)。
+- 配信ステータス (時間/ビットレート/ドロップ/再接続) と VU は `Shared`
+  (`Arc<Mutex>`) を直接ポーリングする。F-ST-04 の再接続トリガもワーカーの
+  周期tickで判定する。
+
+### 5.3 型定義 — 旧IPC型を継承 (`StreamConfig` の `hw_direct`/`direct_input` は旧キーとして読込互換のみ)
+
+v0.2追加: `StreamConfig.cursor` (F-SC-04) と `StreamConfig.appMix` (F-AU-04、配信開始時のper-app gain/mute)。`Error` イベントはキャプチャ初期化/停止失敗でも発行する。
 
 ---
 
-## 6. React UI設計 (ezTopazと同一。Portalピッカーボタンのみ削除)
+## 6. egui UI設計
+
+### 6.0 デザイン原則 (ユーザー要件)
+
+- **直線的でつながりのある構成:** 1pxヘアライン、直角 (`CornerRadius::ZERO`)、
+  浮遊カード/影なし。セクションは辺を共有して連結する。
+- **絵文字・グラデーション禁止:** アイコンは図形とテキストのみ。VUメーターは
+  離散ブロック (色はハードステップ) で描画する。
+- **色:** アクセント1色 (青) + 機能色 (赤=LIVE、アンバー=警告、緑=正常)。
+  背景は無彩色。
+- **文字:** ラテンはegui同梱フォント、CJKは同梱 Noto Sans JP にフォールバック。
+  絵文字フォントは `FontDefinitions` から除外する。
 
 ```
-App
- ├─ Header (ezStreamer | ●00:12 | ja/en | ⚙)
- ├─ Main (tabs: Screen | Audio | Output)
- │   ├─ ScreenSelector: Radio[Display/Window] + DisplayGrid + WindowList + PreviewCanvas(16:9)
- │   ├─ AudioSelector: Radio[System/Apps] + AppMultiSelect(checkbox) + MicSelect + VuMeter * N
- │   ├─ ProfileSelector: [Low][Mid●][High][1080p⚠] + EncoderSelect(auto/...)
- │   └─ StreamControl: IngestInput(editable) + KeyInput + UrlCopy(PC/Quest) + BigToggle
- └─ SettingsModal (Profiles CRUD + EncoderDetails + Logs + Licenses)
+EzStreamerApp
+ ├─ Header: ezStreamer | LIVE 00:12 + bitrate | ja/en | 設定
+ ├─ StepRail (左): 01 画面 → 02 音声 → 03 出力 (番号四角を縦線で接続)
+ ├─ Central: 選択中ステップ
+ │   ├─ Screen: モード + 一覧 (Windows) / Portalピッカー (Linux) + 16:9プレビュー
+ │   ├─ Audio: マスターVU + System/Apps + per-app VU/mute/gain + mic
+ │   └─ Output: プロファイルカード + エンコーダ選択/使用可否
+ ├─ StreamDock (下固定): Ingest/Key + PC/Quest URLコピー + 大トグル
+ └─ Settings (全画面ペイン): Profiles CRUD + JSON入出力 + Encoder + Logs/Licenses
 ```
 
-- 状態管理は `zustand` (個別セレクタのみ。オブジェクトリテラル selector禁止 — 無限再レンダで白画面化するため。`tauri-ui-debug` skill参照)
+- 状態は `UiState` (純データ・egui非依存) + `I18n`。バックエンド状態は `Shared`。
+- 失敗はインライン赤表示 + トースト (下部中央、エラーは赤枠)。
+- 設定画面はモーダルではなく全画面ペイン (直線構成の維持)。
 
 ---
 
@@ -246,7 +276,7 @@ App
 - `Win: %APPDATA%/ezStreamer/`、`Linux: ~/.config/ezStreamer/` (XDG)
 - `profiles.json`: プロファイル/IngestURL/StreamKey/前回ソース/エンコーダ/ロケール/カーソル
 - **自動保存 (F-CF-02):** 画面/音声/プロファイル/エンコーダ/IngestURL/StreamKey/ロケール/カーソルの変更を
-  400ms debounce で `save_profiles` に集約 (SettingsModalのプロファイル編集は即時保存)
+  400ms debounce で `SaveConfig` に集約 (設定ペインの保存ボタンは即時保存)
 - `logs/ezStreamer-YYYY-MM-DD.log` (ローカル日付・10MBローテーション): bus ERROR/EOS + リトライ + キャプチャ失敗 + 開始/停止 (F-CF-04)
 - スキーマは `requirements.md` §8.2。旧キー (`hw_direct`, `direct_input`) は読み捨て。`lastSources.cursor` は後方互換 (無ければON)
 - 保存は atomic write (tmp→rename)。破損ファイルは既定値で再生成
@@ -275,15 +305,15 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 | エラー | 検出 | UI表示 |
 |---|---|---|
 | GStreamer不在 | `gst::init()` 失敗 / 要素不在 | モーダル「GStreamerランタイムが見つかりません」+ 配信開始無効 |
-| デバイス未接続 | mic選択時: `start_stream` 前にデバイス存在確認 (Windows) / PipeWire streamエラー (Linux) | 開始時エラー or インライン赤「デバイスが見つかりません」+ `stream://error` |
+| デバイス未接続 | mic選択時: `StartStream` 前にデバイス存在確認 (Windows) / PipeWire streamエラー (Linux) | 開始時エラー or インライン赤「デバイスが見つかりません」+ `UiEvent::Error` |
 | ビットレート超過 | `cfg.v_kbps>2000` or `a_kbps>320` | インライン赤「Topaz上限を超えています」+ 開始無効 |
-| パイプライン起動失敗 | preroll 400ms 以内の bus ERROR / 要素link失敗 | `stream://error` でモーダル + logsリンク |
+| パイプライン起動失敗 | preroll 400ms 以内の bus ERROR / 要素link失敗 | `UiEvent::Error` でトースト + インライン赤 + logsリンク |
 | 配信切断 | bus ERROR/EOS | `F-ST-04` で3回リトライ(1/2/4s指数バックオフ)、UIで「再接続中 1/3」表示。3回失敗で停止。**再生成時はキャプチャ+パイプライン全体を作り直す**。再接続中も大ボタンでキャンセル可 |
-| キャプチャ停止 | WGC/PipeWire スレッド終了・デバイス消失 | `stream://error` + ログ (映像は最終フレーム静止のまま) |
+| キャプチャ停止 | WGC/PipeWire スレッド終了・デバイス消失 | `UiEvent::Error` + ログ (映像は最終フレーム静止のまま) |
 | StreamKey空/不正 | `key` の文字種/長さ/IngestURLを `build_plan` でも検証 | インライン赤 |
 
 - **ログ:** busメッセージ・リトライ・feeder/キャプチャ異常を `logs/ezStreamer-YYYY-MM-DD.log` に追記 (10MBローテーション)
-- **プロセス後始末:** プロセス内パイプラインのためゾンビなし。`stop` は EOS送信→drain→`Null`。EOSが3秒観測できなければ強制`Null` (RTMP切断でUIがブロックしない)。アプリ終了時は `RunEvent::ExitRequested` で停止処理を実行 (v0.2実装)
+- **プロセス後始末:** プロセス内パイプラインのためゾンビなし。`stop` は EOS送信→drain→`Null`。EOSが3秒観測できなければ強制`Null` (RTMP切断でUIがブロックしない)。アプリ終了時は `Backend` の Drop (`Shutdown` コマンド + worker join) で停止処理を実行 (v0.3実装)
 
 ---
 
@@ -304,7 +334,7 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 - **画面共有権限:** WGCのOS標準ダイアログ経由のみ
 - **StreamKey:** 平文保存だが公開情報(視聴URLの一部)なので暗号化不要。`README` に明記
 - **GStreamer:** LGPL。`GSTREAMER-NOTICE.txt` + 取得元URLを `Settings > Licenses` と `README` に記載。libx264/GPL汚染なし (FFmpeg同梱時代の問題が解消)
-- **Tauri:** `tauri.conf.json` で `csp: default-src 'self'`、外部通信はRTMPのみ
+- **GUI:** ネイティブegui (webviewなし)。外部通信はRTMPのみで、埋め込みブラウザや外部URL読込は存在しない
 
 ---
 
@@ -317,7 +347,7 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 - `gst::probe::tests` — 要素名→UI id対応, 優先順, vulkan手動限定
 - `gst::supervisor::tests` — backoff, ランタイム探索順
 - `audio::mixer::tests` — f32加算, `clamp`, `gain`, VU計算
-- React: `vitest` で `ProfileSelector` の `1080p` 警告表示, `copy` 機能
+- UIロジック: `cargo test -p ezstreamer --no-default-features` (i18nキー一致/絵文字禁止, playback URL, 選択のconfig往復, プロファイル順)。egui描画自体は実機E2Eで確認
 
 ### 12.2 結合 (Windows / Linux 実機)
 
@@ -331,7 +361,7 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 
 | AC | 自動/手動 |
 |---|---|
-| `AC-01` 未設定で開始不可 | 自動 (vitest) |
+| `AC-01` 未設定で開始不可 | 自動 (Rust: key検証テスト) |
 | `AC-04/04c/04d` 音声分離 | 手動 (実機 + ヘッドホン) |
 | `AC-05` 高画質 2000k | 手動 (ffprobe) |
 | `AC-08` Win2004+/11 | 手動 (実機 Topaz Playerで視聴) |
@@ -344,20 +374,28 @@ fn best() -> String { nvenc > qsv > amf > vaapi > libx264 } // vulkanは手動�
 ### 13.1 ローカル (Windows)
 
 ```powershell
-pnpm i; pnpm tauri dev    # 開発 (GStreamer MSVC Runtime+Development要)
-pnpm tauri build          # リリース (resources/gstreamer はCI配置。ローカルは空=システムランタイム使用)
+cargo run -p ezstreamer    # 開発 (WindowsはGStreamer MSVC Runtime+Development要)
+cargo build --release -p ezstreamer  # リリース (resources/gstreamer はCI配置。ローカルは空=システムランタイム使用)
 ```
 
-### 13.2 CI (GitHub Actions, `windows-latest` のみ)
+### 13.2 CI (GitHub Actions: `windows-latest` + `ubuntu-24.04`)
 
 ```yaml
-- choco install gstreamer --version <pinned>  # MSVC runtime+dev、GSTREAMER_1_0_ROOT_MSVC_X86_64
+# windows
+- GStreamer MSVC runtime (pinned URL, /TYPE=devel)
 - cargo test -p ezstreamer-core
 - cargo check -p ezstreamer
-- pnpm i && pnpm build && pnpm test
+- cargo test -p ezstreamer
+- cargo check -p ezstreamer --no-default-features   # UIのみ
+# linux
+- apt: libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev pipewire libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+- cargo test -p ezstreamer-core
+- cargo check -p ezstreamer --tests
+- cargo test -p ezstreamer
+- cargo test -p ezstreamer --no-default-features
 ```
 
-Release (NSIS): 同ランタイムから allowlist subset を `src-tauri/resources/gstreamer/` にコピー:
+Release (NSIS): 同ランタイムから allowlist subset を `ezstreamer-app/resources/gstreamer/` にコピー:
 
 - `bin/`: `gstreamer-1.0-0.dll`, `glib-2.0-0.dll`, `gobject-2.0-0.dll`, `gst*-1.0-0.dll` 系 + 依存 (`intl`, `ffi`, `pcre2`, `z`, `crypto/ssl` 系)
 - `lib/gstreamer-1.0/`: `gstapp`, `gstvideoconvertscale`, `gstaudioconvert`, `gstaudioresample`, `gstvideofilter`?, `gstflv`, `gstrtmp2`, `gstx264`, `gstopenh264`, `gstvaapi`?, `gstnvcodec`, `gstqsv`, `gstamfcodec`, `gstd3d11`, `gstwasapi2`
@@ -381,7 +419,7 @@ Release (NSIS): 同ランタイムから allowlist subset を `src-tauri/resourc
 ## 14. 実装順序 (WBS 骨子)
 
 1. **スパイク (0.5週):** `appsrc→{nvh264enc,x264enc}→flvmux→rtmp2sink` のPoC (`gst-launch-1.0` + 最小Rust)。Topaz実 ingest への到達確認
-2. **基盤 (0.5週):** Tauri+React雛形 (ezTopaz流用), ConfigManager, probe, IPC骨組み ← 本書時点で完了
+2. **基盤 (0.5週):** egui/eframe 雛形 + backend worker, ConfigManager, probe, イベント橋 ← 本書時点で完了
 3. **画面 (0.5週):** ScreenSelector + Preview + 全画面/ウィンドウ切替 ← 継承済み、実機確認のみ
 4. **音声 (0.5週):** AudioSelector(複数) + Mixer + VU ← 継承済み、実機確認のみ
 5. **配信 (1週):** GstPipeline western調整 (NVENC/QSV/AMF実機プロパティ、レイテンシ)、Ingest可変 + URLコピー + エラーハンドリング
@@ -403,3 +441,4 @@ Release (NSIS): 同ランタイムから allowlist subset を `src-tauri/resourc
 |---|---|---|
 | 0.1 | 2026-09-04 | 初版作成 (ezTopaz design v0.2からfork: §4 GStreamer化、§8.1 レジストリprobe、Linux系全削除、§13.2 MSVC同梱、WBS短縮) |
 | 0.2 | 2026-09-10 | Linux/Flatpak (Portal ScreenCast + PipeWire、§3.1.4/§3.2.2/§13.4) を追記。レビュー修正を反映: NVENC `high-performance` (§4.3)、appsrc do-timestamp/leaky・max-buffers (§4.1)、openh264enc単位 (§4.3)、mux pad probeでの実ビットレート (§4.1)、ファイルログ/設定自動保存/カーソル (§7)、キャプチャ失敗の `stream://error` (§9)、app終了処理 (§9)。requirements v0.2 対応 |
+| 0.3 | 2026-09-11 | GUI を Tauri+React から egui/eframe へ移行 (§2.1/2.2/2.3, §5, §6)。プレビューを生RGBA化、設定画面を全画面ペイン化、NSIS を `packaging/windows/ezstreamer.nsi` に移行 (§13.1/13.2)。「直線的でつながりのあるデザイン」「絵文字・グラデーション禁止」を UI 要件に追加 |

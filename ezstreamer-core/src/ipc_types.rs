@@ -1,4 +1,5 @@
-//! Shared IPC types (design.md §5.3). Serialized over Tauri IPC (camelCase JSON).
+//! Shared backend types (design.md §5.3). Serialized as camelCase JSON for
+//! `profiles.json`-adjacent snapshots; the egui bridge uses them directly.
 
 pub use crate::config::{MicSource, ScreenTarget, ScreenTargetKind};
 use serde::{Deserialize, Serialize};
@@ -101,29 +102,6 @@ pub struct VuLevel {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PreviewFrame {
-    /// data URL (`data:image/png;base64,...`)
-    pub data_url: String,
-    pub w: u32,
-    pub h: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogLine {
-    pub level: String,
-    pub msg: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamError {
-    pub code: String,
-    pub msg: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Display {
     pub id: String,
     pub label: String,
@@ -169,5 +147,3 @@ pub struct EncoderInfo {
     pub usable: bool,
     pub reason: Option<String>,
 }
-
-

@@ -5,14 +5,11 @@ on:
     tags: ['preview.*']
   pull_request:
     paths:
-      - 'src-tauri/**'
+      - 'ezstreamer-app/**'
       - 'ezstreamer-core/**'
       - 'packaging/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
@@ -35,10 +32,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
-      - uses: pnpm/action-setup@v4
-        with: { version: 10 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
       - name: Install GStreamer MSVC runtime (pinned)
         shell: pwsh
         env:
@@ -76,7 +69,7 @@ jobs:
         shell: pwsh
         run: |
           $gst = if ($env:GSTREAMER_1_0_ROOT_MSVC_X86_64) { $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 } else { "C:\gstreamer\1.0\msvc_x86_64" }
-          $dst = "src-tauri/resources/gstreamer"
+          $dst = "ezstreamer-app/resources/gstreamer"
           Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
           New-Item -ItemType Directory "$dst/bin" -Force | Out-Null
           New-Item -ItemType Directory "$dst/lib/gstreamer-1.0" -Force | Out-Null
@@ -88,8 +81,7 @@ jobs:
           Copy-Item "$gst/bin/*.dll" "$dst/bin/"
           # Resolve pipeline plugins from the FULL runtime registry instead of a
           # hand-kept filename list (preview.03 guessed names and still missed
-          # gstcoreelements, which provides capsfilter+queue — start_stream
-          # failed on clean machines in every preview so far).
+          # gstcoreelements, which provides capsfilter+queue).
           # For each element used by gst_stream.rs spawn_pipeline (+ encoder
           # variants), gst-inspect reports its plugin file; that exact file is
           # staged. A missing REQUIRED element throws here, never on user PCs.
@@ -194,8 +186,32 @@ jobs:
           Sources: https://gitlab.freedesktop.org/gstreamer/gstreamer
           License: LGPL-2.1+ (see GSTREAMER-NOTICE.txt in resources/licenses)
           "@ | Out-File -Encoding utf8 "$dst/GSTREAMER-BUILD.txt"
-      - name: Build NSIS bundle
-        run: pnpm i && pnpm tauri build --bundles nsis
+      - name: Build release binary
+        run: cargo build --release -p ezstreamer
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          # Version comes from Cargo.toml (single source of truth).
+          $version = (Select-String -Path ezstreamer-app/Cargo.toml -Pattern '^version = "(.+)"$' | Select-Object -First 1).Matches[0].Groups[1].Value
+          echo "version=$version"
+          New-Item -ItemType Directory dist -Force | Out-Null
+          # Chocolatey does not refresh PATH in the running job; resolve the
+          # makensis path explicitly.
+          $nsis = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "${env:ProgramFiles}\NSIS\makensis.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $nsis) {
+            $cmd = Get-Command makensis -ErrorAction SilentlyContinue
+            if ($cmd) { $nsis = $cmd.Source }
+          }
+          if (-not $nsis) { throw "makensis not found after choco install nsis" }
+          # Absolute paths: NSIS resolves relative File/OutFile paths against
+          # the invoking cwd, not the script directory.
+          & $nsis "/DAPP_VERSION=$version" "/DSRC_DIR=$PWD\target\release" "/DRES_DIR=$PWD\ezstreamer-app\resources" "/DOUT_FILE=$PWD\dist\ezStreamer-$version-setup.exe" "/DICON_FILE=$PWD\ezstreamer-app\icons\icon.ico" packaging\windows\ezstreamer.nsi
+          if (-not (Test-Path "dist/ezStreamer-$version-setup.exe")) { throw "installer was not produced" }
       - name: Publish release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -237,12 +253,12 @@ jobs:
           ---
           $COMPARE
 
-          Windows preview build (NSIS, GStreamer LGPL subset bundled) + Linux Flatpak (GNOME runtime).
+          Windows preview build (NSIS, native egui UI, GStreamer LGPL subset bundled) + Linux Flatpak (GNOME runtime).
           EOF
           gh release create "$TAG" --title "ezStreamer $TAG" --notes-file /tmp/release-notes.md \
-            target/release/bundle/nsis/*.exe
+            dist/*.exe
 
-  # Linux Flatpak (GNOME runtime carries GStreamer + PipeWire + WebKitGTK).
+  # Linux Flatpak (GNOME runtime carries GStreamer + PipeWire + GL).
   # PRs build to verify the manifest; tags bundle + attach the .flatpak to
   # the same GitHub Release (created by the Windows job — upload retries
   # until it exists).
@@ -254,10 +270,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: pnpm/action-setup@v4
-        with: { version: 10 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
       - name: Install flatpak toolchain + GNOME SDK
         run: |
           sudo apt-get update
@@ -266,8 +278,6 @@ jobs:
           sudo flatpak install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50 \
             org.freedesktop.Sdk.Extension.rust-stable//25.08 \
             org.freedesktop.Sdk.Extension.llvm21//25.08
-      - name: Build frontend (tauri frontendDist)
-        run: pnpm i && pnpm build
       - name: Vendor Rust crates (flatpak build sandbox is offline)
         run: |
           mkdir -p .cargo

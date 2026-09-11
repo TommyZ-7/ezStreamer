@@ -1,8 +1,8 @@
-# Flatpak packaging for ezStreamer (Linux).
+# Flatpak packaging for ezStreamer (Linux, native egui UI).
 #
-# Runtime carries GStreamer + PipeWire + WebKitGTK, so unlike the Windows
-# NSIS build there is no vendored media subset: the app talks to the
-# Portal (ScreenCast) and PipeWire daemon through the sandbox.
+# GNOME runtime carries GStreamer + PipeWire + GL/EGL, so unlike the Windows
+# NSIS build there is no vendored media subset: the app talks to the Portal
+# (ScreenCast) and PipeWire daemon through the sandbox.
 #
 # Build sandbox has NO network: Rust crates must be vendored first
 # (flatpak-builder blocks all build-time downloads).
@@ -10,7 +10,6 @@
 # CI (preferred):
 #   cargo vendor             # needs network; writes vendor/ + config below
 #   <paste vendor config into .cargo/config.toml>
-#   pnpm install && pnpm build   # frontend dist/ (tauri frontendDist)
 #   flatpak-builder --force-clean --repo=repo build-dir \
 #     packaging/flatpak/app.ezstreamer.desktop.yaml
 #   flatpak build-bundle repo ezstreamer.flatpak app.ezstreamer.desktop
@@ -30,18 +29,18 @@ sdk-extensions:
   # libclang for bindgen (libspa-sys/pipewire-sys build scripts)
   - org.freedesktop.Sdk.Extension.llvm21
 finish-args:
-  # Wayland + X11 fallback (wry), shared memory buffers
+  # Wayland + X11 fallback (winit/glutin), shared memory buffers
   - --share=ipc
   # RTMP ingest
   - --share=network
   - --socket=wayland
   - --socket=fallback-x11
-  # Mic/system/app audio via PipeWire-Pulse
+  # Mic/system/app audio via the native PipeWire socket
   - --socket=pulseaudio
   # Native PipeWire socket: the app uses the pipewire crate directly for
   # audio capture/enumeration (PulseAudio socket alone is not enough).
   - --filesystem=xdg-run/pipewire-0
-  # HW encode/decode (VA-API/NVENC) + GL presentation
+  # HW encode/decode (VA-API/NVENC) + GL presentation for egui
   - --device=dri
   # NOTE: ScreenCast needs no explicit permission — it is mediated by
   # xdg-desktop-portal at runtime (per-call user consent in the OS picker).
@@ -57,15 +56,12 @@ modules:
         CARGO_NET_OFFLINE: "true"
         LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
     build-commands:
-      # tauri/custom-protocol is what `tauri build` injects; raw cargo build
-      # without it stays in dev mode (empty embedded assets + devUrl
-      # http://localhost:5173 -> "Could not connect to localhost" on launch).
-      - cargo --offline build --release --manifest-path src-tauri/Cargo.toml --features tauri/custom-protocol
-      # NOTE: workspace root owns target/ (not src-tauri/target).
+      - cargo --offline build --release --manifest-path ezstreamer-app/Cargo.toml
+      # NOTE: workspace root owns target/ (not ezstreamer-app/target).
       - install -Dm755 target/release/ezstreamer /app/bin/ezstreamer
       - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.desktop /app/share/applications/app.ezstreamer.desktop.desktop
       - install -Dm644 packaging/flatpak/app.ezstreamer.desktop.metainfo.xml /app/share/metainfo/app.ezstreamer.desktop.metainfo.xml
-      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/app.ezstreamer.desktop.png
+      - install -Dm644 ezstreamer-app/icons/icon.png /app/share/icons/hicolor/512x512/apps/app.ezstreamer.desktop.png
     sources:
       - type: dir
         path: ../..

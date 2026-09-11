@@ -22,8 +22,7 @@ description: Work on another branch in a separate session without disturbing the
 
 ## Notes
 
-- `target/` and `node_modules/` are per-worktree; each needs its first build
-  (`pnpm` store is shared so install is fast; Rust can share
-  `CARGO_TARGET_DIR` but simultaneous builds block on the cargo lock).
+- `target/` is per-worktree; each needs its first build. Rust can share
+  `CARGO_TARGET_DIR` but simultaneous builds block on the cargo lock.
 - Branches, tags and remotes are shared across worktrees. Merge into `main`
   one at a time per `AGENTS.md` §1/§5.

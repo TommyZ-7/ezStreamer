@@ -1,0 +1,81 @@
+[package]
+name = "ezstreamer"
+version = "0.1.0-preview09"
+edition = "2021"
+description = "Lightweight streamer for TopazChat (native egui UI; GStreamer; Windows + Linux/Flatpak)"
+default-run = "ezstreamer"
+
+[features]
+# Platform media stack (GStreamer + WGC/WASAPI or Portal/PipeWire).
+# `--no-default-features` compiles the egui UI with stub capture/pipeline so
+# hosts without GStreamer dev packages can still type-check and run UI tests.
+default = ["media"]
+media = [
+  "dep:gstreamer",
+  "dep:gstreamer-app",
+  "dep:ashpd",
+  "dep:pipewire",
+  "dep:libspa",
+  "dep:tokio",
+  "dep:libc",
+  "dep:windows",
+]
+
+[dependencies]
+eframe = { version = "0.32", default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "wayland",
+  "x11",
+] }
+egui = "0.32"
+ezstreamer-core = { path = "../ezstreamer-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Platform capture + GStreamer. Optional + cfg-gated so `cargo check
+# --no-default-features` works on any host; the real backend compiles on
+# Windows / windows-msvc and on Linux (Flatpak runtime provides GStreamer +
+# PipeWire).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+  "implement",
+  "Foundation",
+  "Win32_Globalization",
+  "Graphics",
+  "Graphics_Capture",
+  "Graphics_DirectX",
+  "Graphics_DirectX_Direct3D11",
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_System_WinRT",
+  "Win32_System_WinRT_Direct3D11",
+  "Win32_System_WinRT_Graphics_Capture",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_WindowsAndMessaging",
+], optional = true }
+gstreamer = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", features = ["v1_20"], optional = true }
+
+# Linux capture (Portal ScreenCast + PipeWire) + GStreamer from the Flatpak
+# runtime (or system packages on dev machines).
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", features = ["v1_20"], optional = true }
+ashpd = { version = "0.7", default-features = false, features = ["tokio"], optional = true }
+pipewire = { version = "0.10", features = ["v1_0_0"], optional = true }
+libspa = { version = "0.10", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+libc = { version = "0.2", optional = true }

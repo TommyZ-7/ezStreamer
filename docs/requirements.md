@@ -1,10 +1,12 @@
-# ezStreamer 要件定義書 v0.2
+# ezStreamer 要件定義書 v0.3
 
-> 作成日: 2026-09-04 | 更新日: 2026-09-10 | 対象: 要件定義フェーズ | ステータス: Draft | リポジトリ: `ezStreamer`
+> 作成日: 2026-09-04 | 更新日: 2026-09-11 | 対象: 要件定義フェーズ | ステータス: Draft | リポジトリ: `ezStreamer`
 > 派生元: `ezTopaz` 要件定義書 v0.3.2。v0.1時点の差分は **Windows専用化 (§4, §6)** と **FFmpeg→GStreamer置換 (§4.4)** のみ。それ以外の機能要件は同一 (v0.2でLinux/Flatpakを追加)。
 > v0.2 (2026-09-10): **Linux/Flatpak 対応をスコープに追加** (元は非スコープ)。実装レビュー修正
 > (NVENC preset 要件準拠、設定永続化、ファイルログ、A/V同期、appsrc backpressure、マイクデバイス選択、
 > per-app 音量UI、カーソルON/OFF、プロファイル export/import) を反映。
+> v0.3 (2026-09-11): **GUI を Tauri + React から Rust + egui/eframe へ移行** (§4.2)。UI要件に
+> 「直線的でつながりのあるデザイン」「絵文字・グラデーション不使用」を追加 (§7)。機能要件は変更なし。
 
 ---
 
@@ -77,27 +79,29 @@ TopazChatへの映像・音声配信に特化し、「起動→画面/音声選�
 - プロセス内でエンコード〜RTMP送信を完結 (sidecarプロセス・名前付きパイプを使わない)
 - オフライン動作、MIT公開
 
-### 4.2 採用: **Tauri 2 + Rust + React + TypeScript + GStreamer (gstreamer-rs)**
+### 4.2 採用: **Rust + egui/eframe + GStreamer (gstreamer-rs)**
 
 **理由:**
-1. 軽量: TauriはOS WebView利用でChromium同梱不要
+1. 軽量: WebView / Node ツールチェーンを持たない。単一のネイティブバイナリ (egui/eframe + glow) で描画
 2. プロセス内完結: GStreamerパイプライン (`appsrc → encode → flvmux → rtmp2sink`) により、FFmpeg sidecar・名前付きパイプ・stderrパースが不要。起動高速化・クラッシュ時のゾンビプロセス問題の解消
 3. Native: 画面は `WGC` (Windows) / Portal ScreenCast (Linux)、音声は `WASAPI` (Windows) / PipeWire (Linux) をRustで直接取得し、`appsrc` に供給
 4. Windows + Linux 対応: WindowsはWGC/WASAPI、Linuxは xdg-desktop-portal (ashpd) + PipeWire。Mixer/FramePacer/GStreamer/UI/config はプラットフォーム非依存
+5. UI要件: 直線的でつながりのあるレイアウト、絵文字・グラデーション不使用 (§7)
 
 **アーキテクチャ案:**
 ```
-[React UI (ja/en)] <-> [Tauri IPC (Rust)] <-> [Capture Manager (WGC/WASAPI or Portal/PipeWire)] -> appsrc
-                                                [AudioMixer/FramePacer (Rust)] -> appsrc
-                                                [GstPipeline: encode(H.264) + flvmux + rtmp2sink]
-                                                [Config (profiles.json + ingestUrl)]
+[egui UI (ja/en, native)] <-> [backend worker (Rust) commands/events]
+                              [Capture Manager (WGC/WASAPI or Portal/PipeWire)] -> appsrc
+                              [AudioMixer/FramePacer (Rust)] -> appsrc
+                              [GstPipeline: encode(H.264) + flvmux + rtmp2sink]
+                              [Config (profiles.json + ingestUrl)]
 ```
 
 **GStreamer同梱方針 (Windows):** 公式 GStreamer MSVC 64-bit ランタイムのサブセットを
 インストーラに同梱し、同梱パス (`resources/gstreamer/`) を `PATH` + `GST_PLUGIN_PATH` に設定して
 初期化する (完全オフライン要件のため初回DLなし)。起動時にレジストリでHWエンコーダ存在を確認し
 自動選択。手動オーバーライドも設定画面で可能。**Linux (Flatpak):** GNOME runtime が
-GStreamer + PipeWire + WebKitGTK を提供するため同梱しない。
+GStreamer + PipeWire + GL を提供するため同梱しない。
 
 ### 4.3 エンコーダ対応表
 
@@ -213,39 +217,43 @@ PipeWire のリモートfdを直接受けて BGRA フレーム化する。アプ
 
 ---
 
-## 7. 画面遷移・UI要件 (ezTopazと同一)
+## 7. 画面遷移・UI要件 (v0.3: egui)
+
+**デザイン要件 (v0.3追加):**
+- **直線的でつながりのあるデザイン:** 1pxの罫線と直角で区切り、セクションを連結する。
+  浮遊カード・影・角丸は使用しない。
+- **絵文字・グラデーション禁止:** アイコンは図形とテキストのみ。VUメーター等は
+  離散ブロックのハードステップで描画する。
+- 配色は無彩色 + アクセント1色。赤=配信中、アンバー=警告、緑=正常のみ機能色。
 
 ```
-┌─────────────────────────────────────────┐
-│ ヘッダ: ezStreamer | ●配信中 00:12 | 🌐ja/en | 設定 ⚙ |
-├─────────────────────────────────────────┤
-│ [画面] [音声] [出力]                    │
-│ ■ 画面: ○全画面(モニタ1/2)              │
-│         ○ウィンドウ ▼[Chrome]            │
-│   [プレビュー 16:9]                     │
-│ ■ 音声: ○システム全体  ▬○ VU            │
-│         ○アプリ指定 ☑Chrome ☑Spotify ☑Discord VU │
-│         ☑マイク ▼[USB Mic] VU  [オン/オフ] │
-│ ■ 品質: [低] [中●] [高] [1080p⚠]       │
-│         エンコーダ: [自動▼] 詳細▼       │
-│ ■ 配信: Ingest [rtmp://topaz.chat/live ▼] [編集] │
-│         key [my-key____]                │
-│   PC  rtspt://...  [コピー]             │
-│   Quest rtsp://... [コピー]             │
-│   [ ■ 配信開始 ]  大ボタン              │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│ ezStreamer │ ■配信中 00:12  1500 kbps │ ja/en │ 設定  │
+├──────────┬───────────────────────────────────────────┤
+│ 01 画面 ─┤ 画面: 全画面/ウィンドウ + プレビュー16:9    │
+│ 02 音声 ─┤ 音声: システム/アプリ + mic + VU          │
+│ 03 出力 ─┤ 出力: [低][中][高][1080p] + エンコーダ      │
+│          │                                            │
+├──────────┴───────────────────────────────────────────┤
+│ Ingest [rtmp://topaz.chat/live]  Key [my-key____]     │
+│ PC    rtspt://...            [コピー]                 │
+│ Quest rtsp://...             [コピー]                 │
+│                                  [ 配信開始 ] 大ボタン │
+└──────────────────────────────────────────────────────┘
 ```
 
 - **原則:** OBSの「シーン/ソース」概念なし。チェックボックスとドロップダウンで完結。
-- **配信開始ボタンは常時下部固定**。**VUメーター必須**。
-- **エラー表示:** ビットレート超過、デバイス未接続、Key空欄、GStreamer不在はインライン赤表示+配信開始無効化。
+- **配信開始ボタンは常時下部固定 (StreamDock)**。**VUメーター必須**。
+- **エラー表示:** ビットレート超過、デバイス未接続、Key空欄、GStreamer不在は
+  インライン赤表示 + 配信開始無効化 (失敗はトーストでも通知)。
 - **言語切替:** ヘッダの `ja/en` トグルで即時切替。
+- **設定画面:** 全画面ペイン (モーダルではない)。「戻る」で本体へ。
 
-### 7.2 設定画面 (⚙)
+### 7.2 設定画面 (全画面ペイン)
 - プロファイル一覧(低/中/高/1080p+カスタム) 編集・複製・削除
 - エンコーダ: 自動結果表示 + 手動選択 (auto / libx264 / nvenc / qsv / amf / vaapi / vulkan)
-- Ingest URL履歴
-- ログ/バージョン/ライセンス(MIT + GStreamer LGPL)/支援リンク(Topaz FANBOX)
+- JSONエクスポート (設定ディレクトリの `exports/`) / インポート (パス入力 or ドラッグ&ドロップ)
+- ログ/バージョン/ライセンス(MIT + GStreamer LGPL)
 
 ---
 
@@ -343,3 +351,4 @@ PipeWire のリモートfdを直接受けて BGRA フレーム化する。アプ
 |---|---|---|
 | 0.1 | 2026-09-04 | 初版作成 (ezTopaz v0.3.2からfork: Windows専用化、FFmpeg→GStreamer、Linux/X11/Wayland/Portal/PipeWire/ffmpeg-sidecar/named-pipe/ddagrab関連を削除、AC-11同梱完結を追加) |
 | 0.2 | 2026-09-10 | Linux/Flatpak (Portal ScreenCast + PipeWire) をスコープへ追加。レビュー修正を反映: NVENC `high-performance`、設定永続化 (F-CF-02/05)、ファイルログ (F-CF-04)、A/V同期とappsrc backpressure、マイクデバイス選択 (F-AU-03/05)、per-app 音量/ミュートUI (F-AU-04)、カーソルON/OFF (F-SC-04)、プロファイル export/import (F-CF-03)、AC-12 |
+| 0.3 | 2026-09-11 | GUI を Tauri + React から Rust + egui/eframe へ移行 (§4.2)。UI要件に「直線的でつながりのあるデザイン」「絵文字・グラデーション禁止」を追加 (§7)。設定画面を全画面ペイン化、i18n を同梱JSON化 |
