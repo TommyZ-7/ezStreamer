@@ -238,7 +238,7 @@ pub fn spawn_pipeline(
         &[("bitrate".into(), (plan.a_kbps * 1000).to_string())],
     );
     mux.set_property("streamable", &true);
-    sink.set_property("location", &plan.rtmp_url);
+    configure_rtmp_sink(&sink, &plan.rtmp_url);
 
     // Video leg: tail videoconvert always present; `vulkanupload` only for
     // Vulkan (bridges system memory → VulkanImage). The conditional element
@@ -458,11 +458,45 @@ fn apply_string_props(element: &gstreamer::Element, props: &[(String, String)]) 
     }
 }
 
+/// Configure the RTMP sink for a live `appsrc` pipeline.
+///
+/// `async` MUST be false. `rtmp2sink` inherits `async=true` from
+/// `GstBaseSink`, so its READY→PAUSED waits for a preroll buffer. The
+/// appsrc feeders only push once the pipeline is PLAYING (`do-timestamp`
+/// needs the distributed clock), so with the default the pipeline deadlocks
+/// in `PAUSED (pending PLAYING)` forever: flvmux never outputs (0 kbps) and
+/// every expected frame counts as dropped, with no bus ERROR/EOS to log.
+/// Network sinks have no use for preroll; `async=false` commits PLAYING
+/// immediately so the feeders start (preview.06–08 regression).
+fn configure_rtmp_sink(sink: &gstreamer::Element, location: &str) {
+    sink.set_property("location", location);
+    sink.set_property("async", false);
+}
+
 /// Block the calling feeder until the pipeline is PLAYING (or stopping).
 /// Live sources only produce data in PLAYING, when the clock is distributed.
+///
+/// Watchdog: a pipeline that never reaches PLAYING (e.g. an async sink
+/// waiting for preroll with no feeder pushing yet) stalls both feeders
+/// silently — no bus ERROR, UI shows 0 kbps / all frames dropped. Warn with
+/// the current/pending state so the next occurrence is diagnosable.
 fn wait_for_playing(pipeline: &gstreamer::Pipeline, stop: &AtomicBool) {
     use gstreamer::prelude::*;
+    let start = Instant::now();
+    let mut next_warn = start + std::time::Duration::from_secs(2);
     while !stop.load(Ordering::Relaxed) && pipeline.current_state() < gstreamer::State::Playing {
+        if Instant::now() >= next_warn {
+            crate::logging::log(
+                "warn",
+                &format!(
+                    "gst: feeder waiting for PLAYING for {:?} (state={:?}, pending={:?})",
+                    start.elapsed(),
+                    pipeline.current_state(),
+                    pipeline.pending_state(),
+                ),
+            );
+            next_warn = Instant::now() + std::time::Duration::from_secs(10);
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -571,5 +605,28 @@ mod tests {
         apply_string_props(&elem, &[("leaky-type".into(), "downstream".into())]);
         let leaky: gstreamer_app::AppLeakyType = elem.property("leaky-type");
         assert_eq!(leaky, gstreamer_app::AppLeakyType::Downstream);
+    }
+
+    #[test]
+    fn rtmp_sink_is_configured_non_async() {
+        // Regression (preview.06–08): `rtmp2sink` defaults to async=true
+        // (GstBaseSink) and waits for a preroll buffer, while the feeders
+        // only push after PLAYING → the pipeline deadlocked in PAUSED
+        // (0 kbps / all frames dropped, no bus ERROR). async=false breaks it.
+        use gstreamer::prelude::*;
+
+        gstreamer::init().unwrap();
+        // gst-plugins-bad is absent on some dev/CI hosts (Linux CI installs
+        // base plugins only); the Windows CI runtime always has it.
+        let Ok(sink) = gstreamer::ElementFactory::make("rtmp2sink").build() else {
+            eprintln!("skipping: rtmp2sink plugin unavailable (gst-plugins-bad)");
+            return;
+        };
+        configure_rtmp_sink(&sink, "rtmp://127.0.0.1:1/live/k");
+        let is_async: bool = sink.property("async");
+        assert!(!is_async, "rtmp2sink must not wait for preroll");
+        // rtmp2sink re-serializes the URI; only the path is asserted.
+        let location: String = sink.property("location");
+        assert!(location.contains("/live/k"), "location: {location}");
     }
 }
