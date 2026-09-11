@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "ezstreamer"
-version = "0.1.0-preview11"
+version = "0.1.0-preview12"
 dependencies = [
  "ashpd",
  "chrono",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "ezstreamer-core"
-version = "0.1.0-preview11"
+version = "0.1.0-preview12"
 dependencies = [
  "serde",
  "serde_json",
