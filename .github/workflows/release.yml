@@ -210,7 +210,7 @@ jobs:
           if (-not $nsis) { throw "makensis not found after choco install nsis" }
           # Absolute paths: NSIS resolves relative File/OutFile paths against
           # the invoking cwd, not the script directory.
-          & $nsis "/DAPP_VERSION=$version" "/DSRC_DIR=$PWD\target\release" "/DOUT_FILE=$PWD\dist\ezStreamer-$version-setup.exe" packaging\windows\ezstreamer.nsi
+          & $nsis "/DAPP_VERSION=$version" "/DSRC_DIR=$PWD\target\release" "/DOUT_FILE=$PWD\dist\ezStreamer-$version-setup.exe" "/DICON_FILE=$PWD\ezstreamer-app\icons\icon.ico" packaging\windows\ezstreamer.nsi
           if (-not (Test-Path "dist/ezStreamer-$version-setup.exe")) { throw "installer was not produced" }
       - name: Publish release (tags only)
         if: startsWith(github.ref, 'refs/tags/')

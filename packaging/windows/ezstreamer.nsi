@@ -23,7 +23,11 @@ Unicode true
   !define OUT_FILE "..\..\dist\ezStreamer-${APP_VERSION}-setup.exe"
 !endif
 
-!define ICON_FILE "${__FILEDIR__}\..\..\ezstreamer-app\icons\icon.ico"
+!ifndef ICON_FILE
+  ; makensis chdirs to the script directory, so this path is relative to
+  ; packaging/windows. CI passes an absolute /DICON_FILE.
+  !define ICON_FILE "..\..\ezstreamer-app\icons\icon.ico"
+!endif
 
 Name "ezStreamer ${APP_VERSION}"
 OutFile "${OUT_FILE}"
