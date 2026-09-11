@@ -7,9 +7,7 @@ description: Ship an ezStreamer preview release (version bump, PR gate, tag, Git
 
 1. Bump version `0.1.0-previewXX` (semver forbids leading zeros, so `preview01`
    style, e.g. `preview.01` tag ↔ `0.1.0-preview01`):
-   - `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
-     `ezstreamer-core/Cargo.toml`, `Cargo.lock`
-   - `package.json` stays at `0.1.0`.
+   - `ezstreamer-app/Cargo.toml`, `ezstreamer-core/Cargo.toml`, `Cargo.lock`
 2. Branch → PR → `CI` + `Release` (NSIS bundle) green → merge into `main`.
 3. Tag the updated `main` (only with explicit user instruction):
    `git tag preview.XX && git push origin preview.XX`

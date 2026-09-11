@@ -5,38 +5,36 @@ TopazChat配信専用の軽量ストリーマー (Windows 10 2004+ / 11 + Linux/
 
 ezTopaz (FFmpeg sidecar / Win+Linux) の後継として、エンコード・多重化・RTMP送信を
 プロセス内 GStreamer パイプライン (`gstreamer-rs`) に置換したもの。
+GUI は Tauri + React をやめ、ネイティブの **egui/eframe** (Rust) で描画します。
 キャプチャ (Windows: WGC画面 / WASAPI音声、Linux: Portal ScreenCast / PipeWire音声)・
-Rust Mixer/FramePacer・UI は ezTopaz と同一機能です。
+Rust Mixer/FramePacer は従来どおりです。
 
 ## 状態
 
 - 配信中機能: 設定管理・GStreamerパイプライン計画/レジストリprobe・音声ミキサ・FramePacer・
-  GStreamer supervisor (bus監視+F-ST-04自動再接続)・配信前プレビュー (`start_preview`, 640x360@1fps)・
-  UI一式・キャプチャバックエンド (WGC+WASAPI / Portal+PipeWire)
-- 2026-09-10 レビュー修正 (PR #15): NVENC preset を要件準拠 (`high-performance`) に修正、
-  設定/ロケール/カーソルの永続化 (F-CF-02/05)、ファイルログ (F-CF-04)、
-  映像PTSの実時間化と appsrc の backpressure 対策、マイクデバイス選択、
-  per-app 音量/ミュート UI、カーソル ON/OFF、カスタムプロファイル CRUD、
-  JSON export/import、エンコード後ビットレート表示
+  GStreamer supervisor (bus監視+F-ST-04自動再接続)・配信前プレビュー (640x360@1fps)・
+  egui UI一式 (ja/en)・キャプチャバックエンド (WGC+WASAPI / Portal+PipeWire)
+- GUI は **egui 0.32**: 直線的でつながりのあるフラットデザイン (角丸/グラデーション/絵文字なし)、
+  日本語フォント同梱 (Noto Sans JP subset)
 - **Windows / Linux 実機での E2E 確認が次の必須ステップ** (CI はコンパイル + Rustテスト + バンドル検証のみ)
 - リリースビルド: CI `Release` が公式 GStreamer MSVC ランタイムのサブセットを
-  `src-tauri/resources/gstreamer/` へ配置して NSIS に同梱し、Linux は Flatpak (GNOME runtime) を生成
+  `ezstreamer-app/resources/gstreamer/` へ配置して NSIS に同梱し、Linux は Flatpak (GNOME runtime) を生成
 
 ## 開発
 
 ```bash
-pnpm install
-cargo test -p ezstreamer-core     # 純粋ロジック (config/pipeline/probe/mixer/pacer)
-cargo check -p ezstreamer          # Tauri glue (Linux は GStreamer/PipeWire dev が必要)
-cargo test -p ezstreamer           # バックエンド (PipeWire fail-fast など)
-pnpm build && pnpm test            # UI (tsc strict / vitest)
-pnpm tauri dev                     # デスクトップアプリ起動
-pnpm tauri build                   # リリースビルド (GStreamer同梱は CI で配置)
+cargo test -p ezstreamer-core          # 純粋ロジック (config/pipeline/probe/mixer/pacer)
+cargo check -p ezstreamer              # バックエンド (Linux は GStreamer/PipeWire dev が必要)
+cargo test -p ezstreamer               # バックエンド (PipeWire fail-fast など)
+cargo run -p ezstreamer                # デスクトップアプリ起動
+cargo check -p ezstreamer --no-default-features   # UIのみ (GStreamer不要)
 ```
 
 - Windows: GStreamer MSVC 64-bit ランタイム必須 (詳細は `docs/design.md` §13.2)
 - Linux: Wayland + xdg-desktop-portal + PipeWire。Ubuntu 24.04 の依存は
   `packaging/flatpak/README.md` 参照
+- Windows インストーラ (NSIS) は CI `Release` が `packaging/windows/ezstreamer.nsi`
+  から生成します
 
 ## 制約と注意
 
@@ -53,7 +51,7 @@ pnpm tauri build                   # リリースビルド (GStreamer同梱は C
 ## ライセンス
 
 - ezStreamer: MIT (`LICENSE`)
-- 同梱 GStreamer ランタイム: LGPL 2.1+ — `src-tauri/resources/licenses/GSTREAMER-NOTICE.txt` 参照
+- 同梱 GStreamer ランタイム: LGPL 2.1+ — `ezstreamer-app/resources/licenses/GSTREAMER-NOTICE.txt` 参照
 
 ## 支援
 

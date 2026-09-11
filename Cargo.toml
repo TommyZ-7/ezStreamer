@@ -1,5 +1,5 @@
 [workspace]
-members = ["ezstreamer-core", "src-tauri"]
+members = ["ezstreamer-core", "ezstreamer-app"]
 resolver = "2"
 
 [workspace.dependencies]
