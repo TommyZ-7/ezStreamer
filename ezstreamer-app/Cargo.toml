@@ -43,7 +43,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 windows = { version = "0.52", features = [
   "implement",
   "Foundation",
-  "Globalization",
+  "Win32_Globalization",
   "Graphics",
   "Graphics_Capture",
   "Graphics_DirectX",
