@@ -203,7 +203,12 @@ pub fn show(
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, Color32::BLACK);
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0_f32, LINE_STRONG),
+        StrokeKind::Inside,
+    );
     if let Some(texture) = preview_texture {
         painter.image(
             texture.id(),
@@ -252,7 +257,7 @@ fn choice_chip(ui: &mut Ui, text: &str, selected: bool) -> bool {
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0_f32, if selected { ACCENT } else { LINE }),
+        Stroke::new(1.0_f32, if selected { ACCENT } else { LINE_STRONG }),
         StrokeKind::Inside,
     );
     painter.text(

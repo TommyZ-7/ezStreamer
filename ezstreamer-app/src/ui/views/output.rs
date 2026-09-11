@@ -190,7 +190,7 @@ fn profile_card(
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0_f32, if selected { ACCENT } else { LINE }),
+        Stroke::new(1.0_f32, if selected { ACCENT } else { LINE_STRONG }),
         StrokeKind::Inside,
     );
     if selected {
