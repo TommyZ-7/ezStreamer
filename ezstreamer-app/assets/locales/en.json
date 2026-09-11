@@ -15,11 +15,8 @@
   },
   "steps": {
     "screen": "Screen",
-    "screenHint": "Capture source",
     "audio": "Audio",
-    "audioHint": "Inputs and mix",
-    "output": "Output",
-    "outputHint": "Quality and encoder"
+    "output": "Output"
   },
   "screen": {
     "title": "Capture source",

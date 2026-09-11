@@ -28,7 +28,7 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
             [88.0, ROW_H],
             egui::Label::new(RichText::new(i18n.t("audio.master")).size(12.5).color(DIM)),
         );
-        vu_bar(ui, 320.0, 12.0, vu.master.rms);
+        vu_bar(ui, 280.0, 12.0, vu.master.rms);
         ui.label(
             RichText::new(format!("{:.2}", vu.master.rms))
                 .monospace()
