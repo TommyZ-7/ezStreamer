@@ -44,7 +44,7 @@ pub fn button(ui: &mut Ui, label: &str, kind: ButtonKind, enabled: bool) -> Resp
 pub fn icon_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     let widget = egui::Button::new(RichText::new(label).color(DIM).size(12.0))
         .fill(Color32::TRANSPARENT)
-        .stroke(Stroke::new(1.0_f32, LINE))
+        .stroke(Stroke::new(1.0_f32, LINE_STRONG))
         .corner_radius(0.0)
         .min_size(vec2(56.0, 22.0));
     ui.add_enabled(enabled, widget)
@@ -77,7 +77,12 @@ pub fn segmented_sized(
     let painter = ui.painter();
 
     painter.rect_filled(rect, 0.0, PANEL_2);
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0_f32, LINE_STRONG),
+        StrokeKind::Inside,
+    );
     for i in 1..n {
         let x = rect.left() + cell_w * i as f32;
         painter.vline(x, rect.y_range(), Stroke::new(1.0_f32, LINE));
@@ -132,7 +137,7 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     let font = FontId::proportional(13.0);
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), DIM);
+        .layout_no_wrap(label.to_owned(), font.clone(), TEXT);
     let (rect, response) =
         ui.allocate_exact_size(vec2(14.0 + 6.0 + galley.size().x, ROW_H), Sense::click());
     let box_rect = Rect::from_min_size(pos2(rect.left(), rect.center().y - 7.0), vec2(14.0, 14.0));
@@ -164,7 +169,7 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
             } else if response.hovered() {
                 LINE_STRONG
             } else {
-                LINE
+                LINE_STRONG
             },
         ),
         StrokeKind::Inside,
@@ -174,7 +179,7 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
         Align2::LEFT_CENTER,
         label,
         font,
-        if response.hovered() { TEXT } else { DIM },
+        TEXT,
     );
     if response.clicked() {
         *checked = !*checked;
@@ -195,7 +200,12 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>
     );
     let painter = ui.painter();
     painter.rect_filled(track, 0.0, PANEL);
-    painter.rect_stroke(track, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        track,
+        0.0,
+        Stroke::new(1.0_f32, LINE_STRONG),
+        StrokeKind::Inside,
+    );
     let filled_w = track.width() * t;
     painter.rect_filled(
         Rect::from_min_size(track.min, vec2(filled_w, track_h)),
@@ -248,7 +258,12 @@ pub fn vu_bar(ui: &mut Ui, width: f32, height: f32, level: f32) {
         };
         painter.rect_filled(seg, 0.0, color);
     }
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0_f32, LINE_STRONG),
+        StrokeKind::Inside,
+    );
 }
 
 /// Fixed-width dim label used to align form rows.
