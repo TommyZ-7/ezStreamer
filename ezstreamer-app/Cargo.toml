@@ -1,6 +1,6 @@
 [package]
 name = "ezstreamer"
-version = "0.1.0-preview09"
+version = "0.1.0-preview10"
 edition = "2021"
 description = "Lightweight streamer for TopazChat (native egui UI; GStreamer; Windows + Linux/Flatpak)"
 default-run = "ezstreamer"
