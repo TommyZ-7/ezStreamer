@@ -469,6 +469,8 @@ fn apply_string_props(element: &gstreamer::Element, props: &[(String, String)]) 
 /// Network sinks have no use for preroll; `async=false` commits PLAYING
 /// immediately so the feeders start (preview.06–08 regression).
 fn configure_rtmp_sink(sink: &gstreamer::Element, location: &str) {
+    use gstreamer::prelude::*;
+
     sink.set_property("location", location);
     sink.set_property("async", false);
 }
