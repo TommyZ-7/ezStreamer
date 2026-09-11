@@ -29,6 +29,12 @@ Unicode true
   !define ICON_FILE "..\..\ezstreamer-app\icons\icon.ico"
 !endif
 
+!ifndef RES_DIR
+  ; makensis chdirs to the script directory; resources stay in the source
+  ; tree (CI stages the GStreamer subset there before this runs).
+  !define RES_DIR "..\..\ezstreamer-app\resources"
+!endif
+
 Name "ezStreamer ${APP_VERSION}"
 OutFile "${OUT_FILE}"
 InstallDir "$LOCALAPPDATA\ezStreamer"
@@ -67,11 +73,11 @@ Section "ezStreamer" SEC_MAIN
   ; Bundled GStreamer runtime + license notices. The app probes both
   ; <exe>\gstreamer and <exe>\resources\gstreamer (core::gst::bundled_*).
   SetOutPath "$INSTDIR\resources"
-  File /r "${SRC_DIR}\resources\*.*"
+  File /r "${RES_DIR}\*.*"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  CreateShortcut "$SMPROGRAMS\ezStreamer.lnk" "$INSTDIR\ezstreamer.exe"
-  CreateShortcut "$DESKTOP\ezStreamer.lnk" "$INSTDIR\ezstreamer.exe"
+  CreateShortcut "$SMPROGRAMS\ezStreamer.lnk" "$INSTDIR\ezstreamer.exe" "" "$INSTDIR\resources\icons\icon.ico" 0
+  CreateShortcut "$DESKTOP\ezStreamer.lnk" "$INSTDIR\ezstreamer.exe" "" "$INSTDIR\resources\icons\icon.ico" 0
 
   WriteRegStr HKCU "Software\ezStreamer" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ezStreamer" "DisplayName" "ezStreamer"
