@@ -15,7 +15,7 @@ use egui::{
 pub const BG: Color32 = Color32::from_rgb(0x23, 0x24, 0x2C);
 pub const PANEL: Color32 = Color32::from_rgb(0x2A, 0x2B, 0x34);
 pub const PANEL_2: Color32 = Color32::from_rgb(0x32, 0x33, 0x3E);
-pub const INPUT_BG: Color32 = Color32::from_rgb(0x3A, 0x3B, 0x48);
+pub const INPUT_BG: Color32 = Color32::from_rgb(0x2E, 0x2F, 0x39);
 pub const ROW_HOVER: Color32 = Color32::from_rgb(0x40, 0x41, 0x50);
 pub const LINE: Color32 = Color32::from_rgb(0x46, 0x47, 0x57);
 pub const LINE_STRONG: Color32 = Color32::from_rgb(0x5E, 0x5F, 0x72);
@@ -96,12 +96,13 @@ pub fn apply(ctx: &Context) {
     widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
     widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     widgets.noninteractive.corner_radius = CornerRadius::ZERO;
-    // Inputs (TextEdit / ComboBox / DragValue): dark fill from the same
-    // family as `BG` with a visible outline even when unfocused. Focus uses
-    // `selection.stroke` (accent) via TextEdit's own frame painting.
+    // Inputs (TextEdit / ComboBox / DragValue): a fill one step above the
+    // surrounding panel with a quiet outline, so fields read as inputs
+    // without floating off the surface. Focus uses `selection.stroke`
+    // (accent) via TextEdit's own frame painting.
     widgets.inactive.bg_fill = INPUT_BG;
     widgets.inactive.weak_bg_fill = INPUT_BG;
-    widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG);
+    widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
     widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     widgets.inactive.corner_radius = CornerRadius::ZERO;
     widgets.hovered.bg_fill = ROW_HOVER;
@@ -146,7 +147,13 @@ pub fn apply(ctx: &Context) {
         ),
     ]
     .into();
-    ctx.set_style(style);
+    // egui 0.32 keeps separate dark/light styles and follows the OS theme by
+    // default. On a light-mode OS the untouched default light style would win
+    // and TextEdits would render white. Pin our dark theme and install it for
+    // both slots so the UI looks identical everywhere.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_style_of(egui::Theme::Dark, style.clone());
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 
 /// Discrete color for a VU segment index (no gradient: hard steps).
@@ -220,5 +227,21 @@ mod tests {
         assert_eq!(visuals.widgets.inactive.bg_fill, INPUT_BG);
         assert_eq!(visuals.widgets.inactive.text_color(), TEXT);
         assert_eq!(visuals.text_color(), TEXT);
+    }
+
+    #[test]
+    fn apply_ignores_os_light_theme() {
+        // Regression guard for "white floating inputs": egui 0.32 swaps in
+        // the default light style on light-mode OSes unless the theme is
+        // pinned, which used to turn every TextEdit white.
+        let ctx = Context::default();
+        apply(&ctx);
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let visuals = ctx.style_of(theme).visuals.clone();
+            assert_eq!(visuals.text_edit_bg_color(), INPUT_BG);
+            assert_eq!(visuals.extreme_bg_color, INPUT_BG);
+            assert_eq!(visuals.widgets.inactive.bg_fill, INPUT_BG);
+        }
     }
 }

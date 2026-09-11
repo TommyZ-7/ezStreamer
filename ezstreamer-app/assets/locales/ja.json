@@ -15,11 +15,8 @@
   },
   "steps": {
     "screen": "画面",
-    "screenHint": "キャプチャ元",
     "audio": "音声",
-    "audioHint": "入力とミックス",
-    "output": "出力",
-    "outputHint": "画質とエンコーダ"
+    "output": "出力"
   },
   "screen": {
     "title": "キャプチャ元",

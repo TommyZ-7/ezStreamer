@@ -29,14 +29,6 @@ impl Tab {
             Tab::Output => "steps.output",
         }
     }
-
-    pub fn hint_key(self) -> &'static str {
-        match self {
-            Tab::Screen => "steps.screenHint",
-            Tab::Audio => "steps.audioHint",
-            Tab::Output => "steps.outputHint",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

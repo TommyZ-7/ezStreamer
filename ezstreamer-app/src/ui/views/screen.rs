@@ -137,7 +137,7 @@ pub fn show(
             } else {
                 let mut current = state.screen.id.clone();
                 egui::ComboBox::from_id_salt("window-select")
-                    .width((ui.available_width() - 8.0).min(560.0))
+                    .width((ui.available_width() - 8.0).min(520.0))
                     .selected_text(
                         windows
                             .iter()
@@ -198,7 +198,7 @@ pub fn show(
         });
     });
 
-    let width = ui.available_width().min(640.0);
+    let width = ui.available_width().min(520.0);
     let height = (width * 9.0 / 16.0).max(120.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let painter = ui.painter();

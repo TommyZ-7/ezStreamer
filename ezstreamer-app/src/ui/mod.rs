@@ -209,7 +209,7 @@ impl EzStreamerApp {
             ..
         } = self;
 
-        views::header::show(ctx, state, i18n, shared);
+        views::header::show(ctx, state, i18n);
 
         if state.settings_open {
             views::settings::show(ctx, state, i18n, backend);
@@ -218,13 +218,13 @@ impl EzStreamerApp {
         }
 
         views::dock::show(ctx, state, i18n, backend, shared);
-        views::steps::show(ctx, state, i18n, shared);
+        views::steps::show(ctx, state, i18n);
 
         egui::CentralPanel::default()
             .frame(
                 Frame::NONE
                     .fill(theme::BG)
-                    .inner_margin(Margin::symmetric(16, 12)),
+                    .inner_margin(Margin::symmetric(20, 14)),
             )
             .show(ctx, |ui| match state.tab {
                 Tab::Screen => {

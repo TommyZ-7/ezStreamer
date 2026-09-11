@@ -30,7 +30,7 @@ pub fn show(
         .frame(
             Frame::NONE
                 .fill(PANEL)
-                .inner_margin(Margin::symmetric(14, 10)),
+                .inner_margin(Margin::symmetric(16, 10)),
         )
         .show(ctx, |ui| {
             let rect = ui.max_rect();
@@ -40,13 +40,13 @@ pub fn show(
                 Stroke::new(1.0_f32, LINE_STRONG),
             );
 
-            // ingest + key
+            // ingest + key (stacked full-width rows for breathing room)
             ui.horizontal(|ui| {
                 ui.add_sized(
-                    [88.0, ROW_H],
+                    [96.0, ROW_H],
                     egui::Label::new(RichText::new(i18n.t("stream.ingest")).size(12.5).color(DIM)),
                 );
-                let width = (ui.available_width() - 8.0).min(420.0);
+                let width = (ui.available_width() - 4.0).max(160.0);
                 let response = ui.add_sized(
                     [width, ROW_H],
                     egui::TextEdit::singleline(&mut state.ingest_url)
@@ -56,12 +56,14 @@ pub fn show(
                 if response.changed() {
                     state.mark_persist();
                 }
-                ui.add_space(12.0);
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
                 ui.add_sized(
-                    [88.0, ROW_H],
+                    [96.0, ROW_H],
                     egui::Label::new(RichText::new(i18n.t("stream.key")).size(12.5).color(DIM)),
                 );
-                let width = ui.available_width().max(120.0);
+                let width = (ui.available_width() - 4.0).max(160.0);
                 let response = ui.add_sized(
                     [width, ROW_H],
                     egui::TextEdit::singleline(&mut state.stream_key)
@@ -179,7 +181,7 @@ pub fn show(
                         },
                     ))
                     .corner_radius(0.0)
-                    .min_size(egui::vec2(240.0, 40.0));
+                    .min_size(egui::vec2(208.0, 38.0));
                     if ui.add_enabled(enabled, widget).clicked() {
                         if active {
                             state.stopping = true;
