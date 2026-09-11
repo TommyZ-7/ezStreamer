@@ -31,7 +31,12 @@ InstallDir "$LOCALAPPDATA\ezStreamer"
 InstallDirRegKey HKCU "Software\ezStreamer" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
-SetShellVarContext current
+
+; Per-user shortcuts: shell folders must resolve inside the current-user
+; context (the command is only valid in a section/function).
+Function .onInit
+  SetShellVarContext current
+FunctionEnd
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${ICON_FILE}"
@@ -51,6 +56,7 @@ SetShellVarContext current
 !insertmacro MUI_LANGUAGE "English"
 
 Section "ezStreamer" SEC_MAIN
+  SetShellVarContext current
   SetOutPath "$INSTDIR"
   File "${SRC_DIR}\ezstreamer.exe"
 
@@ -73,6 +79,7 @@ Section "ezStreamer" SEC_MAIN
 SectionEnd
 
 Section "Uninstall"
+  SetShellVarContext current
   Delete "$DESKTOP\ezStreamer.lnk"
   Delete "$SMPROGRAMS\ezStreamer.lnk"
   ; %APPDATA%\ezStreamer (profiles.json / logs) is intentionally kept.
