@@ -114,7 +114,7 @@
     "encoders": "Encoders",
     "logs": "Logs",
     "licenses": "Licenses",
-    "licenseText": "ezStreamer: MIT — GStreamer: LGPL 2.1+",
+    "licenseText": "ezStreamer: MIT — GStreamer: LGPL 2.1+ — Noto Sans JP: SIL OFL 1.1",
     "sources": "GStreamer: https://gstreamer.freedesktop.org/download/"
   },
   "warn": {
