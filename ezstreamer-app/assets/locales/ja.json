@@ -13,11 +13,6 @@
     "version": "バージョン",
     "refresh": "再読み込み"
   },
-  "steps": {
-    "screen": "画面",
-    "audio": "音声",
-    "output": "出力"
-  },
   "screen": {
     "title": "キャプチャ元",
     "display": "全画面",
