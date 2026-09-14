@@ -5,7 +5,7 @@ use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
 use crate::ui::widgets::{
-    button, copy_row, label, rule, section_header, small_hint, status_square, ButtonKind,
+    button, label, rule, section_header, small_hint, status_square, ButtonKind,
 };
 use egui::{pos2, vec2, Align2, FontId, RichText, Sense, Stroke, StrokeKind, Ui};
 use ezstreamer_core::config::{MAX_AUDIO_KBPS, MAX_VIDEO_KBPS};
@@ -155,9 +155,9 @@ pub fn show(
         }
     }
 
-    // --- destination (moved out of the dock) --------------------------------
-    // Dock は状態 + CTA 専用にし、入力系はここに集約する。半分幅の横並びを
-    // やめ、全幅行を縦積みで読みやすくする。
+    // --- destination ---------------------------------------------------------
+    // 視聴URLのコピー行は右サイドの controls に移設。ここは Ingest/Key の
+    // 入力と検証結果の表示に専念する。
     ui.add_space(10.0);
     rule(ui);
     ui.add_space(8.0);
@@ -199,26 +199,6 @@ pub fn show(
                 .size(11.5)
                 .color(WARN),
         );
-    }
-    ui.add_space(4.0);
-    let key = if state.stream_key.is_empty() {
-        "your-key"
-    } else {
-        state.stream_key.as_str()
-    };
-    let (pc, quest) = ezstreamer_core::urls::playback_urls(&state.ingest_url, key);
-    if copy_row(ui, &i18n.t("stream.copyPc"), &pc, &i18n.t("stream.copy")) {
-        ui.ctx().copy_text(pc.clone());
-        state.toast(i18n.t("stream.copied"), false);
-    }
-    if copy_row(
-        ui,
-        &i18n.t("stream.copyQuest"),
-        &quest,
-        &i18n.t("stream.copy"),
-    ) {
-        ui.ctx().copy_text(quest.clone());
-        state.toast(i18n.t("stream.copied"), false);
     }
 }
 

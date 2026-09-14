@@ -235,16 +235,16 @@ impl EzStreamerApp {
         }
 
         // OBS-style fixed frame (案2). Panels must be shown before the
-        // CentralPanel: header claims the top edge, the dock the bottom edge,
-        // the config bar stacks above the dock, the mixer claims the right
-        // edge — the canvas gets whatever is left.
-        views::dock::show(ctx, state, i18n, backend, shared);
+        // CentralPanel: header claims the top edge, the status bar the bottom
+        // edge, the config bar stacks above it, the right panel claims the
+        // right edge — the canvas gets whatever is left.
+        views::status::show(ctx, state, i18n, shared);
         views::bottom::show(ctx, state, i18n, backend, shared);
 
-        egui::SidePanel::right("mixer")
+        egui::SidePanel::right("side")
             .exact_width(MIXER_W)
             .resizable(false)
-            .frame(Frame::NONE.fill(theme::PANEL).inner_margin(Margin::same(12)))
+            .frame(Frame::NONE.fill(theme::PANEL))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 ui.painter().vline(
@@ -252,7 +252,31 @@ impl EzStreamerApp {
                     rect.y_range(),
                     Stroke::new(1.0_f32, theme::LINE_STRONG),
                 );
-                views::audio::show(ui, state, i18n, shared);
+                // Controls pinned to the bottom of the side panel; the mixer
+                // flexes in the rest and scrolls if it overflows.
+                egui::TopBottomPanel::bottom("controls")
+                    .frame(
+                        Frame::NONE
+                            .fill(theme::PANEL)
+                            .inner_margin(Margin::same(12)),
+                    )
+                    .show_inside(ui, |ui| {
+                        views::controls::show(ui, state, i18n, backend, shared);
+                    });
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::NONE
+                            .fill(theme::PANEL)
+                            .inner_margin(Margin::same(12)),
+                    )
+                    .show_inside(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("mixer-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                views::audio::show(ui, state, i18n, shared);
+                            });
+                    });
             });
 
         egui::CentralPanel::default()
@@ -296,7 +320,7 @@ fn draw_toast(ctx: &Context, state: &mut UiState) {
         (theme::PANEL_2, theme::LINE_STRONG)
     };
     egui::Area::new(egui::Id::new("toast"))
-        .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -220.0))
+        .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -282.0))
         .order(Order::Foreground)
         .show(ctx, |ui| {
             Frame::NONE
