@@ -7,23 +7,15 @@ use crate::events::UiSink;
 use ezstreamer_core::audio::AudioSink;
 use ezstreamer_core::config::{Profile, ScreenTarget};
 use ezstreamer_core::ipc_types::{AudioDevices, AudioSelection, Display, WindowInfo};
-use ezstreamer_core::video::VideoSink;
+use ezstreamer_core::video::VideoSource;
 
 pub struct ScreenCapture {
-    pub sink: VideoSink,
+    /// Push-only handle to the session-owned pump (see `VideoSource`).
+    pub source: VideoSource,
 }
 
 impl ScreenCapture {
-    pub fn stop(&mut self) {
-        self.stop_source();
-        self.sink.stop();
-    }
-
-    pub fn stop_source(&mut self) {}
-
-    pub fn video_sink(&self) -> VideoSink {
-        self.sink.clone()
-    }
+    pub fn stop(&mut self) {}
 }
 
 pub struct AudioCapture {
@@ -48,18 +40,6 @@ impl ScreenHandle {
             ScreenHandle::Stub(s) => s.stop(),
         }
     }
-
-    pub fn stop_source(&mut self) {
-        match self {
-            ScreenHandle::Stub(s) => s.stop_source(),
-        }
-    }
-
-    pub fn video_sink(&self) -> Option<VideoSink> {
-        match self {
-            ScreenHandle::Stub(s) => Some(s.video_sink()),
-        }
-    }
 }
 
 pub fn make_handle(s: ScreenCapture) -> ScreenHandle {
@@ -82,7 +62,7 @@ pub fn start_screen(
     _ui: UiSink,
     _target: &ScreenTarget,
     _profile: &Profile,
-    _sink: VideoSink,
+    _source: VideoSource,
     _cursor: bool,
 ) -> Result<ScreenCapture> {
     Err(CaptureError::NotAvailable)

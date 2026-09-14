@@ -2,13 +2,14 @@
 //!
 //! A dedicated thread owns the D3D11 device and the capture pool/session; the
 //! FrameArrived handler (free-threaded) copies the surface to a staging
-//! texture, scales to the profile size and pushes into the [`VideoSink`].
-//! Preview PNGs (1fps, 640x360) are emitted as `stream://preview` events.
+//! texture, scales to the profile size and pushes into the shared pump via
+//! the [`VideoSource`] handle. Preview PNGs (1fps, 640x360) are emitted as
+//! `stream://preview` events.
 
 use super::{co_init, err};
 use crate::events::UiSink;
 use ezstreamer_core::config::{Profile, ScreenTarget, ScreenTargetKind};
-use ezstreamer_core::video::{bgra_to_rgba, scale_bgra, VideoSink};
+use ezstreamer_core::video::{bgra_to_rgba, scale_bgra, VideoSource};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,30 +18,23 @@ const PREVIEW_W: u32 = 640;
 const PREVIEW_H: u32 = 360;
 
 pub struct ScreenCapture {
-    pub sink: VideoSink,
+    /// Push-only handle to the session-owned pump (see `VideoSource`): a
+    /// stopped or dropped capture must never stop frame pacing — live source
+    /// switches reuse the pump across captures.
+    pub source: VideoSource,
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ScreenCapture {
+    /// Stop the capture thread and join it. The video pump is owned by the
+    /// backend session (`backend::SessionState::video_pump`), not by
+    /// captures, so this never stops frame pacing.
     pub fn stop(&mut self) {
-        self.stop_source();
-        self.sink.stop();
-    }
-
-    /// Stop the capture thread but keep the shared `VideoSink` pump alive.
-    /// Used for live source switches: the new capture reuses the same sink
-    /// so the GStreamer pipeline never stalls (FramePacer repeats the last
-    /// frame across the gap).
-    pub fn stop_source(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-    }
-
-    pub fn video_sink(&self) -> VideoSink {
-        self.sink.clone()
     }
 }
 
@@ -54,7 +48,7 @@ pub fn start_screen(
     ui: UiSink,
     target: &ScreenTarget,
     profile: &Profile,
-    sink: VideoSink,
+    source: VideoSource,
     cursor: bool,
 ) -> super::Result<ScreenCapture> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -64,12 +58,12 @@ pub fn start_screen(
     let dst_h = profile.h;
     let ui2 = ui.clone();
 
-    let sink_for_capture = sink.clone();
+    let source_for_capture = source.clone();
     let handle = std::thread::Builder::new()
         .name("wgc-capture".into())
         .spawn(move || {
             if let Err(e) =
-                run_capture(&ui, &target, dst_w, dst_h, cursor, &sink_for_capture, stop2)
+                run_capture(&ui, &target, dst_w, dst_h, cursor, &source_for_capture, stop2)
             {
                 crate::logging::error(&format!("wgc capture: {e}"));
                 ui2.error("capture", &e);
@@ -78,7 +72,7 @@ pub fn start_screen(
         .map_err(err)?;
 
     Ok(ScreenCapture {
-        sink,
+        source,
         stop,
         handle: Some(handle),
     })
@@ -90,7 +84,7 @@ fn run_capture(
     dst_w: u32,
     dst_h: u32,
     cursor: bool,
-    sink: &VideoSink,
+    source: &VideoSource,
     stop: Arc<AtomicBool>,
 ) -> super::Result<()> {
     use windows::core::ComInterface;
@@ -179,7 +173,7 @@ fn run_capture(
     let session = pool.CreateCaptureSession(&item).map_err(err)?;
     session.SetIsCursorCaptureEnabled(cursor).map_err(err)?;
 
-    let sink2 = sink.clone();
+    let source2 = source.clone();
     // The handler must observe the same stop flag as the capture loop;
     // this used to be a fresh never-set AtomicBool (dead check).
     let handler_stop = stop.clone();
@@ -259,7 +253,7 @@ fn run_capture(
                     }
                     ctx.Unmap(&staging, 0);
 
-                    sink2.push(scale_bgra(&buf, w, h, dst_w, dst_h));
+                    source2.push(scale_bgra(&buf, w, h, dst_w, dst_h));
 
                     // 1fps preview (F-SC-03): raw RGBA straight to the UI.
                     let mut last = preview_last2.lock().unwrap();

@@ -23,6 +23,7 @@ use ezstreamer_core::config::{
 };
 use ezstreamer_core::gst::{self, retry_backoff_ms, MAX_RETRIES};
 use ezstreamer_core::ipc_types::{AudioMixUpdate, SourceGain, StreamConfig, StreamStatus, VuMeter};
+use ezstreamer_core::video::VideoSink;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -59,7 +60,8 @@ pub enum Command {
     StartStream(Box<StreamConfig>),
     StopStream,
     /// Hot-swap the video source of a running stream without restarting the
-    /// GStreamer pipeline (the new capture reuses the same `VideoSink`).
+    /// GStreamer pipeline (the new capture feeds the session-owned `VideoSink`
+    /// pump).
     SwitchScreen {
         screen: ezstreamer_core::config::ScreenTarget,
         cursor: bool,
@@ -91,10 +93,30 @@ struct SessionState {
     retrying: Mutex<Option<u32>>,
     /// live mixer of the running stream (update_audio_mix targets this)
     active_mixer: Mutex<Option<Arc<Mutex<Mixer>>>>,
+    /// Owned frame pump of the running stream (design §4). Captures hold
+    /// only the push handle (`VideoSource`), so a source switch never stops
+    /// frame pacing; `stop_capture_backends` tears the pump down with the
+    /// rest (review 2026-09-14: the pump used to die with the old capture's
+    /// `Drop` and froze the video leg on every switch).
+    video_pump: Mutex<Option<VideoSink>>,
     /// pre-stream preview capture (F-SC-03); stopped by stream start/stop
-    preview: Mutex<Option<ScreenCapture>>,
+    preview: Mutex<Option<PreviewCapture>>,
     screen: Mutex<Option<ScreenHandle>>,
     audio_cap: Mutex<Option<AudioCapture>>,
+}
+
+/// Preview capture + its exclusive frame pump. The pump must outlive the
+/// capture and stops with it; preview pumps are never shared.
+struct PreviewCapture {
+    capture: ScreenCapture,
+    pump: VideoSink,
+}
+
+impl PreviewCapture {
+    fn stop(&mut self) {
+        self.capture.stop();
+        self.pump.stop();
+    }
 }
 
 impl SessionState {
@@ -105,6 +127,7 @@ impl SessionState {
             session: Mutex::new(None),
             retrying: Mutex::new(None),
             active_mixer: Mutex::new(None),
+            video_pump: Mutex::new(None),
             preview: Mutex::new(None),
             screen: Mutex::new(None),
             audio_cap: Mutex::new(None),
@@ -297,7 +320,6 @@ fn launch_pipeline(
     retry: u32,
 ) -> Result<gst_stream::GstStream, String> {
     use ezstreamer_core::audio::AudioSink;
-    use ezstreamer_core::video::VideoSink;
 
     if sess.cfg.direct_input.as_deref() == Some("ddagrab") {
         eprintln!("direct_input=ddagrab was FFmpeg-only; ignoring (WGC → appsrc)");
@@ -307,13 +329,18 @@ fn launch_pipeline(
     let (vsink, video_rx) =
         VideoSink::spawn_appsrc(sess.profile.w, sess.profile.h, sess.profile.fps)
             .map_err(portable_err)?;
+    let source = vsink.source();
+    // The session owns the pump from here on; every failure path below goes
+    // through `stop_capture_backends`, which stops it last.
+    *state.video_pump.lock().unwrap() = Some(vsink);
+
     let (asink, audio_rx) = AudioSink::spawn_appsrc(sess.mixer.clone()).map_err(portable_err)?;
 
     let screen = cap::start_screen(
         sink.clone(),
         &sess.cfg.screen,
         &sess.profile,
-        vsink,
+        source,
         sess.cfg.cursor,
     )
     .map_err(portable_err)?;
@@ -336,11 +363,16 @@ fn stop_capture_backends(state: &SessionState) {
     if let Some(mut a) = state.audio_cap.lock().unwrap().take() {
         a.stop();
     }
+    // The pump outlives captures by design: stop it last, after the sources
+    // quit pushing (the pacer drains its final frames first).
+    if let Some(p) = state.video_pump.lock().unwrap().take() {
+        p.stop();
+    }
 }
 
 /// Take the preview slot's mutex guard across stop so concurrent preview
 /// start/stop serialize: stop + replace + store is atomic.
-fn take_preview_slot(state: &SessionState) -> std::sync::MutexGuard<'_, Option<ScreenCapture>> {
+fn take_preview_slot(state: &SessionState) -> std::sync::MutexGuard<'_, Option<PreviewCapture>> {
     let mut slot = state.preview.lock().unwrap();
     if let Some(mut p) = slot.take() {
         p.stop();
@@ -491,9 +523,9 @@ fn cmd_stop_stream(state: &Arc<SessionState>, sink: &UiSink, shared: &Arc<Mutex<
 }
 
 /// Live screen switch: replace only the video capture, keeping the GStreamer
-/// pipeline (and audio) running. The new capture reuses the running
-/// `VideoSink`, so the FramePacer repeats the last frame across the gap and
-/// the RTMP connection never drops.
+/// pipeline (and audio) running. The new capture feeds the session-owned
+/// `VideoSink` pump, so the FramePacer repeats the last frame across the gap
+/// and the RTMP connection never drops.
 fn cmd_switch_screen(
     screen: ezstreamer_core::config::ScreenTarget,
     cursor: bool,
@@ -533,26 +565,29 @@ fn cmd_switch_screen(
         sink.send(UiEvent::ScreenSwitched(screen));
         return;
     }
-    // Take the running sink out of the old capture without stopping its pump,
-    // then stop the old source thread (joined, so no two captures overlap).
-    let vsink = {
+    // Stop the old source thread (joined, so no two captures overlap). The
+    // pump is NOT stopped: it lives in `video_pump` and keeps pacing frames,
+    // so the new capture below feeds the same pump.
+    {
         let mut slot = state.screen.lock().unwrap();
         let Some(handle) = slot.as_mut() else {
             sink.error("screen", "stream is not running");
             return;
         };
-        let Some(vsink) = handle.video_sink() else {
-            sink.error("screen", "current capture cannot be switched");
+        handle.stop();
+    }
+    let source = match state.video_pump.lock().unwrap().as_ref() {
+        Some(pump) => pump.source(),
+        None => {
+            sink.error("screen", "stream is shutting down; cannot switch now");
             return;
-        };
-        handle.stop_source();
-        vsink
+        }
     };
     logging::info(&format!(
         "switch_screen: {} -> {} (cursor={})",
         prev_screen.id, screen.id, cursor
     ));
-    match cap::start_screen(sink.clone(), &screen, &profile, vsink.clone(), cursor) {
+    match cap::start_screen(sink.clone(), &screen, &profile, source.clone(), cursor) {
         Ok(next) => {
             *state.screen.lock().unwrap() = Some(cap::make_handle(next));
             if let Some(sess) = state.session.lock().unwrap().as_mut() {
@@ -566,7 +601,7 @@ fn cmd_switch_screen(
             logging::error(&format!("switch_screen to {} failed: {msg}", screen.id));
             // Roll back to the previous source so the stream keeps showing
             // something instead of freezing on the pacer's last frame.
-            match cap::start_screen(sink.clone(), &prev_screen, &profile, vsink, prev_cursor) {
+            match cap::start_screen(sink.clone(), &prev_screen, &profile, source, prev_cursor) {
                 Ok(prev) => {
                     *state.screen.lock().unwrap() = Some(cap::make_handle(prev));
                     sink.send(UiEvent::ScreenSwitched(prev_screen));
@@ -728,8 +763,6 @@ fn cmd_start_preview(
     sink: &UiSink,
     shared: &Arc<Mutex<Shared>>,
 ) {
-    use ezstreamer_core::video::VideoSink;
-
     if state.stream.lock().unwrap().is_some() {
         sink.error("preview", "stream already running");
         set_busy(shared, None);
@@ -756,7 +789,7 @@ fn cmd_start_preview(
         fps: 1,
         ..profile
     };
-    let vsink = match VideoSink::spawn(capture::null_file(), 640, 360, 1) {
+    let pump = match VideoSink::spawn(capture::null_file(), 640, 360, 1) {
         Ok(v) => v,
         Err(e) => {
             sink.error("preview", e);
@@ -764,19 +797,21 @@ fn cmd_start_preview(
             return;
         }
     };
+    let source = pump.source();
     match cap::start_screen(
         sink.clone(),
         &cfg.screen,
         &preview_profile,
-        vsink,
+        source,
         cfg.cursor,
     ) {
         Ok(screen) => {
-            *slot = Some(screen);
+            *slot = Some(PreviewCapture { capture: screen, pump });
             shared.lock().unwrap().previewing = true;
             sink.send(UiEvent::PreviewStarted);
         }
         Err(e) => {
+            // The unused pump drops here, which stops it.
             sink.error("preview", e);
         }
     }

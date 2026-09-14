@@ -21,22 +21,6 @@ impl ScreenHandle {
             ScreenHandle::Direct => {}
         }
     }
-
-    /// Stop the capture thread without tearing down the shared `VideoSink`.
-    /// See `ScreenCapture::stop_source`.
-    pub fn stop_source(&mut self) {
-        match self {
-            ScreenHandle::Wgc(s) => s.stop_source(),
-            ScreenHandle::Direct => {}
-        }
-    }
-
-    pub fn video_sink(&self) -> Option<ezstreamer_core::video::VideoSink> {
-        match self {
-            ScreenHandle::Wgc(s) => Some(s.video_sink()),
-            ScreenHandle::Direct => None,
-        }
-    }
 }
 
 /// Wrap a running capture for storage in the backend session state.
