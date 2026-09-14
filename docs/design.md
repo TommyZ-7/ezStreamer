@@ -1,6 +1,6 @@
-# ezStreamer 詳細設計書 v0.4
+# ezStreamer 詳細設計書 v0.5
 
-> 作成日: 2026-09-04 | 更新日: 2026-09-14 | 要件定義書: `docs/requirements.md` v0.4 対応 | ステータス: Draft
+> 作成日: 2026-09-04 | 更新日: 2026-09-14 | 要件定義書: `docs/requirements.md` v0.5 対応 | ステータス: Draft
 > 派生元: ezTopaz 詳細設計書 v0.2。キャプチャ・ミキシング・UIは継承し、FFmpeg sidecar連携 (§4) とエンコーダprobe (§8.1) をGStreamer化。
 > v0.2 (2026-09-10): Linux (Portal ScreenCast + PipeWire / Flatpak) 対応を追記。実装レビュー修正
 > (NVENC `high-performance`、映像PTSの実時間化、appsrc backpressure、openh264enc単位、ファイルログ、
@@ -11,6 +11,9 @@
 > v0.4 (2026-09-14): UI を OBS 風固定レイアウトへ再構成 (§2.1, §6)。ステップレールを廃止し
 > 「中央プレビューキャンバス + 右ミキサー/操作 + 下部3区画 + ステータスバー」に変更。
 > プレビューを 1fps → 5fps に改善 (§3.1, §5.2)。
+> v0.5 (2026-09-14): 中段右を配信パネルへ集約 (Stream: ストリームキー / 視聴URLコピー /
+> 配信CTA のみ)。下段を [映像ソース 30% | 音量 40% | エンコーダ 30%] に再構成し、音声ミキサーを
+> 下段中央へ移動。エンコーダ区画はプロファイルComboBox + 詳細行に作り直し。Ingest URL は設定画面へ移動。
 
 ---
 
@@ -31,7 +34,7 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  egui UI (eframe, ja/en, native)                        │
-│   Header / Preview canvas / Mixer / Controls /          │
+│   Header / Preview canvas / Stream panel /              │
 │   BottomBar / StatusBar / Settings                      │
 └──────────────────────┬──────────────────────────────────┘
               Rust channels (Command / UiEvent)
@@ -260,24 +263,27 @@ v0.2追加: `StreamConfig.cursor` (F-SC-04) と `StreamConfig.appMix` (F-AU-04�
 EzStreamerApp
  ├─ Header: ezStreamer | LIVE/再接続バッジ | ja/en | 設定
  ├─ Central: プレビューキャンバス (16:9, 常時) + プレビュー開始/停止
- ├─ SidePanel (右, 340px 固定):
- │   ├─ Mixer: マスターVU + System/Apps + per-app VU/mute/gain + mic
- │   │         (内容が溢れた場合のみ内部スクロール)
- │   └─ Controls (パネル最下部固定): 配信開始/停止 大トグル (208x38)
- │                                  + PC/Quest 視聴URLコピー
- ├─ BottomBar (下, 240px 固定, 3区画 = ヘアライン区切り):
- │   ├─ Sources: モード + 一覧 (Windows) / Portalピッカー (Linux) + カーソル
- │   ├─ Quality: プロファイルカード + エンコーダ選択/使用可否
- │   └─ Destination: Ingest/Key 入力 (+検証結果)
+ ├─ SidePanel (右, 340px 固定) = Stream パネル:
+ │   ├─ Stream (上部, 溢れたら内部スクロール): ストリームキー入力
+ │   │   (+検証エラー/汎用キー警告) + PC/Quest 視聴URLコピー + 既定値ヒント
+ │   └─ CTA (パネル最下部固定): 配信開始/停止 大トグル (208x38)
+ ├─ BottomBar (下, 280px 固定, 3区画 = ヘアライン区切り, 幅 30/40/30%):
+ │   ├─ Sources: 映像ソース — モード + 一覧 (Windows) / Portalピッカー (Linux) + カーソル
+ │   ├─ Volume: 音量 — マスターVU + System/Apps + per-app VU/mute/gain + mic
+ │   │           (内容が溢れた場合のみ内部スクロール)
+ │   └─ Encoder: エンコーダ — プロファイルComboBox (+詳細行/警告)
+ │              + エンコーダComboBox + usable 一覧
  ├─ StatusBar (最下部, 30px): 再接続 n/3 / LIVE kbps+ドロップ / 起動中・停止中 /
  │                            エラー / キー検証 / 未選択ヒント | バージョン
- └─ Settings (全画面ペイン): Profiles CRUD + JSON入出力 + Encoder + Logs/Licenses
+ └─ Settings (全画面ペイン): Profiles CRUD + Ingest URL + JSON入出力
+                             + Encoder + Logs/Licenses
 ```
 
-- 配置トークンは `ui/widgets.rs` (`MIXER_W`=340 / `BOTTOM_H`=240 / CTA 208x38)。
+- 配置トークンは `ui/widgets.rs` (`SIDE_W`=340 / `BOTTOM_H`=280 / CTA 208x38)。
   中央キャンバスはパネル確定後の残域すべてを使い、16:9 を保って幅に合わせる。
 - 配信中はキャプチャ自体がプレビュー経路 (5fps) に供給するため、
   配信中のキャンバスも同じテクスチャで更新される。
+- Ingest URL は設定画面で編集 (`F-URL-01`、400ms debounce 自動保存)。
 
 - 状態は `UiState` (純データ・egui非依存) + `I18n`。バックエンド状態は `Shared`。
 - 失敗はインライン赤表示 + トースト (下部中央、エラーは赤枠)。
