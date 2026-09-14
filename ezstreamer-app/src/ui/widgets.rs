@@ -8,7 +8,9 @@ use egui::{
     pos2, vec2, Align2, Color32, FontId, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui,
 };
 
-/// Product-level layout tokens (案1: 3ゾーン固定).
+/// Product-level layout tokens (案2: OBS風固定レイアウト).
+/// - 中央にプレビューキャンバス、右にミキサー (MIXER_W)、
+///   下部に設定バー (BOTTOM_H)、最下部にステータスドック
 /// - セクション見出しは左タイトル + 右に最大2アクションで統一
 /// - フォーム行ラベルは 96px 固定で縦に揃える
 /// - セカンダリボタンは最小幅 96px、CTA は 208x38 単一で統一
@@ -16,6 +18,8 @@ pub const LABEL_W: f32 = 96.0;
 pub const BTN_MIN_W: f32 = 96.0;
 pub const CTA_W: f32 = 208.0;
 pub const CTA_H: f32 = 38.0;
+pub const MIXER_W: f32 = 340.0;
+pub const BOTTOM_H: f32 = 240.0;
 
 /// Flat button variants: normal (panel), primary (accent), danger (live).
 #[derive(Clone, Copy, PartialEq, Eq)]

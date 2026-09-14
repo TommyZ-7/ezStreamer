@@ -11,26 +11,6 @@ use ezstreamer_core::ipc_types::{
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-/// Left-rail steps (requirements §7: 画面 / 音声 / 出力).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tab {
-    Screen,
-    Audio,
-    Output,
-}
-
-impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Screen, Tab::Audio, Tab::Output];
-
-    pub fn title_key(self) -> &'static str {
-        match self {
-            Tab::Screen => "steps.screen",
-            Tab::Audio => "steps.audio",
-            Tab::Output => "steps.output",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioMode {
     System,
@@ -66,7 +46,6 @@ pub const BUILTIN_PROFILE_IDS: &[&str] = &["low", "mid", "high", "1080p"];
 
 pub struct UiState {
     pub locale: Locale,
-    pub tab: Tab,
     pub settings_open: bool,
     pub booted: bool,
 
@@ -110,7 +89,6 @@ impl UiState {
         let defaults = ProfilesConfig::default();
         Self {
             locale: os_locale,
-            tab: Tab::Screen,
             settings_open: false,
             booted: false,
             displays: Vec::new(),

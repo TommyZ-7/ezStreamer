@@ -16,9 +16,11 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
     section_header(ui, &i18n.t("audio.title"), |_| {});
 
     // F-ST-03: master VU over the mixed output.
+    // ミキサーパネルは幅が狭いため、VU はラベル+数値を除いた幅に合わせる。
     ui.horizontal(|ui| {
         label(ui, &i18n.t("audio.master"));
-        vu_bar(ui, 280.0, 12.0, vu.master.rms);
+        let bar_w = (ui.available_width() - 40.0).max(60.0);
+        vu_bar(ui, bar_w, 12.0, vu.master.rms);
         ui.label(
             RichText::new(format!("{:.2}", vu.master.rms))
                 .monospace()
@@ -85,9 +87,10 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                         let entry = state.app_mix_entry(&app.id);
                         ui.horizontal(|ui| {
                             ui.add_space(20.0);
+                            let bar_w = (ui.available_width() - 150.0).max(60.0);
                             vu_bar(
                                 ui,
-                                200.0,
+                                bar_w,
                                 10.0,
                                 vu.apps.get(&app.id).map(|v| v.rms).unwrap_or(0.0),
                             );
@@ -146,8 +149,9 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                 .unwrap_or_else(|| mic_snapshot.device.clone())
         };
         let mut device = mic_snapshot.device.clone();
+        let combo_w = (ui.available_width() - 110.0).clamp(80.0, 220.0);
         egui::ComboBox::from_id_salt("mic-device")
-            .width(220.0)
+            .width(combo_w)
             .selected_text(selected_label)
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -181,9 +185,10 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
         let mic_gain = mic_snapshot.gain;
         ui.horizontal(|ui| {
             ui.add_space(20.0);
+            let bar_w = (ui.available_width() - 150.0).max(60.0);
             vu_bar(
                 ui,
-                200.0,
+                bar_w,
                 10.0,
                 vu.mic.as_ref().map(|m| m.rms).unwrap_or(0.0),
             );

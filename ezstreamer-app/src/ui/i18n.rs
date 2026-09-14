@@ -163,11 +163,11 @@ mod tests {
     #[test]
     fn translates_and_interpolates() {
         let i18n = I18n::new(Locale::Ja);
-        assert_eq!(i18n.t("steps.screen"), "画面");
+        assert_eq!(i18n.t("screen.title"), "キャプチャ元");
         let text = i18n.tf("stream.retrying", &[("n", "2")]);
         assert_eq!(text, "再接続中 2/3");
         let en = I18n::new(Locale::En);
-        assert_eq!(en.t("steps.screen"), "Screen");
+        assert_eq!(en.t("screen.title"), "Capture source");
         assert_eq!(en.t("missing.key"), "missing.key");
     }
 }

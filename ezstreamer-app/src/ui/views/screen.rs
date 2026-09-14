@@ -1,13 +1,13 @@
-//! Step 1: capture source + preview (F-SC-01/02/03/04).
+//! Capture source selection (F-SC-01/02/04). Shown in the left column of the
+//! bottom bar (`views/bottom.rs`); the preview canvas lives in
+//! `views/preview.rs`.
 
 use crate::backend::{Backend, Command, Shared};
 use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
 use crate::ui::widgets::{button, section_header, small_hint, ButtonKind};
-use egui::{
-    pos2, vec2, Align2, Color32, FontId, RichText, Sense, Stroke, StrokeKind, TextureHandle, Ui,
-};
+use egui::{pos2, vec2, Align2, FontId, RichText, Sense, Stroke, StrokeKind, Ui};
 use std::sync::{Arc, Mutex};
 
 pub fn show(
@@ -16,14 +16,12 @@ pub fn show(
     i18n: &I18n,
     backend: &Backend,
     shared: &Arc<Mutex<Shared>>,
-    preview_texture: &Option<TextureHandle>,
 ) {
-    let (busy_picking, busy_switching, previewing, live) = {
+    let (busy_picking, busy_switching, live) = {
         let shared = shared.lock().unwrap();
         (
             shared.busy == Some(crate::backend::Busy::Picking),
             shared.busy == Some(crate::backend::Busy::Switching) || state.switching,
-            shared.previewing,
             shared.status.is_live || shared.status.retrying.is_some(),
         )
     };
@@ -182,81 +180,6 @@ pub fn show(
             }
         }
     }
-    ui.add_space(8.0);
-
-    // --- preview (F-SC-03) --------------------------------------------------
-    // During a live stream the capture already feeds this texture at 1fps,
-    // so there is no separate preview to start/stop: switching happens from
-    // the selection above.
-    let previewing = previewing || shared.lock().unwrap().previewing;
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(i18n.t("screen.preview"))
-                .size(12.5)
-                .color(DIM),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if live {
-                ui.label(RichText::new(i18n.t("stream.live")).size(12.0).color(LIVE));
-                return;
-            }
-            let has_source = !state.screen.id.is_empty();
-            let label = if previewing {
-                i18n.t("screen.previewStop")
-            } else {
-                i18n.t("screen.previewStart")
-            };
-            let kind = if previewing {
-                ButtonKind::Danger
-            } else {
-                ButtonKind::Normal
-            };
-            let enabled = has_source || previewing;
-            if button(ui, &label, kind, enabled).clicked() {
-                if previewing {
-                    backend.send(Command::StopPreview);
-                } else {
-                    state.preview_restart_due = None;
-                    backend.send(Command::StartPreview(Box::new(state.stream_config())));
-                }
-            }
-        });
-    });
-
-    let width = ui.available_width().min(520.0);
-    let height = (width * 9.0 / 16.0).max(120.0);
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, Color32::BLACK);
-    painter.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0_f32, LINE_STRONG),
-        StrokeKind::Inside,
-    );
-    if let Some(texture) = preview_texture {
-        painter.image(
-            texture.id(),
-            rect,
-            egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    } else {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            i18n.t("screen.previewEmpty"),
-            FontId::proportional(12.0),
-            FAINT,
-        );
-    }
-    ui.add_space(4.0);
-    if live {
-        small_hint(ui, &i18n.t("screen.livePreviewHint"));
-    } else {
-        small_hint(ui, &i18n.t("screen.previewHint"));
-    }
-
     if state.displays.is_empty() && cfg!(not(target_os = "linux")) {
         ui.add_space(4.0);
         small_hint(ui, &i18n.t("screen.notAvailable"));

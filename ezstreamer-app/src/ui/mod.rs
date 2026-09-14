@@ -11,9 +11,10 @@ use crate::events::UiEvent;
 use crate::logging;
 use egui::{Align2, Context, Frame, Margin, Order, RichText, Stroke};
 use i18n::{I18n, Locale};
-use state::{Tab, UiState};
+use state::UiState;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use widgets::MIXER_W;
 
 pub struct EzStreamerApp {
     backend: Backend,
@@ -233,28 +234,31 @@ impl EzStreamerApp {
             return;
         }
 
+        // OBS-style fixed frame (案2). Panels must be shown before the
+        // CentralPanel: header claims the top edge, the dock the bottom edge,
+        // the config bar stacks above the dock, the mixer claims the right
+        // edge — the canvas gets whatever is left.
         views::dock::show(ctx, state, i18n, backend, shared);
-        views::steps::show(ctx, state, i18n);
+        views::bottom::show(ctx, state, i18n, backend, shared);
+
+        egui::SidePanel::right("mixer")
+            .exact_width(MIXER_W)
+            .resizable(false)
+            .frame(Frame::NONE.fill(theme::PANEL).inner_margin(Margin::same(12)))
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                ui.painter().vline(
+                    rect.left(),
+                    rect.y_range(),
+                    Stroke::new(1.0_f32, theme::LINE_STRONG),
+                );
+                views::audio::show(ui, state, i18n, shared);
+            });
 
         egui::CentralPanel::default()
-            .frame(
-                Frame::NONE
-                    .fill(theme::BG)
-                    .inner_margin(Margin::symmetric(20, 14)),
-            )
+            .frame(Frame::NONE.fill(theme::BG).inner_margin(Margin::same(16)))
             .show(ctx, |ui| {
-                // 出力タブに配信先が集約されて縦に長くなったため、
-                // 全タブをスクロール対応にする (横幅は固定のまま)。
-                egui::ScrollArea::vertical()
-                    .id_salt("main-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| match state.tab {
-                        Tab::Screen => {
-                            views::screen::show(ui, state, i18n, backend, shared, preview_texture)
-                        }
-                        Tab::Audio => views::audio::show(ui, state, i18n, shared),
-                        Tab::Output => views::output::show(ui, state, i18n, backend, shared),
-                    });
+                views::preview::show(ui, state, i18n, backend, shared, preview_texture);
             });
 
         draw_toast(ctx, state);
