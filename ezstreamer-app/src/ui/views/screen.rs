@@ -190,7 +190,7 @@ pub fn show(
 }
 
 /// Source change routing: live streams hot-swap via SwitchScreen, idle or
-/// previewing restarts the 1fps preview capture (debounced).
+/// previewing restarts the 5fps preview capture (debounced).
 fn apply_source_change(
     state: &mut UiState,
     backend: &Backend,

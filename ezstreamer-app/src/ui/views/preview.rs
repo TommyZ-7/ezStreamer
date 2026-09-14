@@ -1,5 +1,5 @@
 //! Central preview canvas (OBS-style): a large always-visible canvas fed by
-//! the 1fps capture preview, or by the live capture itself during a stream
+//! the 5fps capture preview, or by the live capture itself during a stream
 //! (F-SC-03). The capture source picker lives in `views/screen.rs`, shown in
 //! the bottom bar (`views/bottom.rs`).
 
@@ -28,7 +28,7 @@ pub fn show(
             shared.previewing,
         )
     };
-    // While live the capture feeds this texture at 1fps; treat it as
+    // While live the capture feeds this texture at 5fps; treat it as
     // previewing so the control strip only shows the LIVE marker.
     if live {
         previewing = true;

@@ -37,6 +37,12 @@ pub enum CaptureError {
 
 pub type Result<T> = std::result::Result<T, CaptureError>;
 
+/// Preview cadence (F-SC-03): 640x360 RGBA is throttled to 5fps and sent
+/// straight to the UI, bypassing GStreamer (design §3.1/§6.4). 5fps keeps the
+/// cost small (scale + convert on 1.4MB frames) while the OBS-style canvas
+/// reads as "moving" instead of a slideshow.
+pub const PREVIEW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// A sink writer that swallows frames (preview mode: the capture backend feeds
 /// the UI itself; no pipeline involved).
 pub fn null_file() -> std::fs::File {

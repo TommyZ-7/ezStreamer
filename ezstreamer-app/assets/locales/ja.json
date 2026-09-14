@@ -27,7 +27,7 @@
     "previewEmpty": "プレビューなし",
     "previewStart": "プレビュー開始",
     "previewStop": "プレビュー停止",
-    "previewHint": "画面を選び「プレビュー開始」で1fpsの確認映像を表示します",
+    "previewHint": "画面を選び「プレビュー開始」で5fpsの確認映像を表示します",
     "liveHint": "配信中も画面を切り替えできます",
     "livePreviewHint": "配信中の映像を表示しています。切替は上の選択から行えます",
     "switching": "画面を切り替え中…",
