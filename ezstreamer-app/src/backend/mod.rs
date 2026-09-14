@@ -561,21 +561,24 @@ fn cmd_switch_screen(
             sess.cfg.cursor,
         )
     };
-    if prev_screen == screen && prev_cursor == cursor {
+    // The running capture decides between a true no-op and a (re)start: a
+    // dead slot (the previous switch failed on both the new target and its
+    // rollback) must start a capture again even for the same target, or the
+    // switch would report success while the video leg stays frozen.
+    let mut slot = state.screen.lock().unwrap();
+    let alive = slot.is_some();
+    if alive && prev_screen == screen && prev_cursor == cursor {
+        drop(slot);
         sink.send(UiEvent::ScreenSwitched(screen));
         return;
     }
-    // Stop the old source thread (joined, so no two captures overlap). The
-    // pump is NOT stopped: it lives in `video_pump` and keeps pacing frames,
-    // so the new capture below feeds the same pump.
-    {
-        let mut slot = state.screen.lock().unwrap();
-        let Some(handle) = slot.as_mut() else {
-            sink.error("screen", "stream is not running");
-            return;
-        };
+    // Stop the old source thread (joined, so no two captures overlap). An
+    // empty slot means the previous switch failed twice: nothing to stop,
+    // and the session-owned pump is still pacing the last frame.
+    if let Some(handle) = slot.as_mut() {
         handle.stop();
     }
+    drop(slot);
     let source = match state.video_pump.lock().unwrap().as_ref() {
         Some(pump) => pump.source(),
         None => {
@@ -599,6 +602,17 @@ fn cmd_switch_screen(
         Err(e) => {
             let msg = portable_err(e);
             logging::error(&format!("switch_screen to {} failed: {msg}", screen.id));
+            if !alive {
+                // Recovery has no previous capture to roll back to, but the
+                // pump (and the stream) keep running on the pacer's last
+                // frame. Leave the slot empty so the next switch request
+                // retries the start instead of erroring out.
+                sink.error(
+                    "screen",
+                    format!("switch failed ({msg}); pick a source again or restart the stream"),
+                );
+                return;
+            }
             // Roll back to the previous source so the stream keeps showing
             // something instead of freezing on the pacer's last frame.
             match cap::start_screen(sink.clone(), &prev_screen, &profile, source, prev_cursor) {
@@ -1007,20 +1021,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn switch_when_idle_errors() {
-        let (state, sink, shared, rx) = test_state();
-        cmd_switch_screen(screen_target("monitor:1"), true, &state, &sink, &shared);
-        match rx.try_recv().expect("expected an event") {
-            UiEvent::Error(msg) => assert!(msg.contains("not running"), "msg: {msg}"),
-            other => panic!("expected Error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn switch_same_target_is_noop_success() {
-        let (state, sink, shared, rx) = test_state();
-        let target = screen_target("monitor:0");
+    /// Install a running-stream fixture: session (target + cursor) + stream.
+    fn live_session(
+        state: &Arc<SessionState>,
+        target: &ezstreamer_core::config::ScreenTarget,
+        cursor: bool,
+        retry: u32,
+    ) {
         let profile = Profile {
             name: "mid".into(),
             w: 1280,
@@ -1033,7 +1040,7 @@ mod tests {
         };
         let cfg = StreamConfig {
             screen: target.clone(),
-            cursor: true,
+            cursor,
             ..StreamConfig::default()
         };
         let plan = gst::build_plan(
@@ -1051,12 +1058,69 @@ mod tests {
             profile,
             mixer: Arc::new(Mutex::new(Mixer::default())),
         });
-        *state.stream.lock().unwrap() = Some(gst_stream::GstStream::for_test(plan, 0));
+        *state.stream.lock().unwrap() = Some(gst_stream::GstStream::for_test(plan, retry));
+    }
+
+    #[test]
+    fn switch_when_idle_errors() {
+        let (state, sink, shared, rx) = test_state();
+        cmd_switch_screen(screen_target("monitor:1"), true, &state, &sink, &shared);
+        match rx.try_recv().expect("expected an event") {
+            UiEvent::Error(msg) => assert!(msg.contains("not running"), "msg: {msg}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// Same target + cursor with a LIVE capture must be a true no-op: the
+    /// event is sent and the capture/pump are untouched. Stub-only: real
+    /// backends need an actual display to construct a `ScreenHandle`.
+    #[cfg(not(all(feature = "media", any(windows, target_os = "linux"))))]
+    #[test]
+    fn switch_same_target_with_alive_capture_is_noop_success() {
+        let (state, sink, shared, rx) = test_state();
+        let target = screen_target("monitor:0");
+        live_session(&state, &target, true, 0);
+        let pump = VideoSink::spawn(capture::null_file(), 2, 2, 1).expect("test pump");
+        let source = pump.source();
+        *state.video_pump.lock().unwrap() = Some(pump);
+        *state.screen.lock().unwrap() = Some(cap::make_handle(ScreenCapture { source }));
         cmd_switch_screen(target.clone(), true, &state, &sink, &shared);
         match rx.try_recv().expect("expected an event") {
             UiEvent::ScreenSwitched(got) => assert_eq!(got, target),
             other => panic!("expected ScreenSwitched, got {other:?}"),
         }
+        assert!(
+            state.screen.lock().unwrap().is_some(),
+            "no-op must keep the capture alive"
+        );
+        assert!(
+            state.video_pump.lock().unwrap().is_some(),
+            "no-op must keep the pump alive"
+        );
+    }
+
+    /// Regression (review 2026-09-14): an EMPTY capture slot (the previous
+    /// switch failed on both the new target and its rollback) must make a
+    /// same-target request attempt a real (re)start — with the stub start
+    /// failing, the UI gets an error, never a fake success.
+    #[cfg(not(all(feature = "media", any(windows, target_os = "linux"))))]
+    #[test]
+    fn switch_same_target_on_dead_slot_restarts_capture_not_fake_success() {
+        let (state, sink, shared, rx) = test_state();
+        let target = screen_target("monitor:0");
+        live_session(&state, &target, true, 0);
+        let pump = VideoSink::spawn(capture::null_file(), 2, 2, 1).expect("test pump");
+        *state.video_pump.lock().unwrap() = Some(pump);
+        // the slot stays empty: the previous switch failed twice
+        cmd_switch_screen(target.clone(), true, &state, &sink, &shared);
+        match rx.try_recv().expect("expected an event") {
+            UiEvent::Error(msg) => assert!(msg.contains("switch failed"), "msg: {msg}"),
+            other => panic!("expected Error (recovery attempt failed), got {other:?}"),
+        }
+        assert!(
+            state.screen.lock().unwrap().is_none(),
+            "failed recovery keeps the slot empty"
+        );
     }
 
     #[test]
@@ -1064,37 +1128,7 @@ mod tests {
         let (state, sink, shared, rx) = test_state();
         let old = screen_target("monitor:0");
         let next = screen_target("monitor:1");
-        let profile = Profile {
-            name: "mid".into(),
-            w: 1280,
-            h: 720,
-            fps: 30,
-            v_kbps: 1500,
-            a_kbps: 192,
-            encoder: "auto".into(),
-            warn: None,
-        };
-        let cfg = StreamConfig {
-            screen: old,
-            cursor: true,
-            ..StreamConfig::default()
-        };
-        let plan = gst::build_plan(
-            &profile,
-            "auto",
-            &[],
-            "rtmp://topaz.chat/live",
-            "abc123",
-            None,
-        )
-        .expect("test plan builds");
-        *state.session.lock().unwrap() = Some(StreamSession {
-            cfg,
-            plan: plan.clone(),
-            profile,
-            mixer: Arc::new(Mutex::new(Mixer::default())),
-        });
-        *state.stream.lock().unwrap() = Some(gst_stream::GstStream::for_test(plan, 1));
+        live_session(&state, &old, true, 1);
         *state.retrying.lock().unwrap() = Some(1);
         cmd_switch_screen(next.clone(), false, &state, &sink, &shared);
         match rx.try_recv().expect("expected an event") {
