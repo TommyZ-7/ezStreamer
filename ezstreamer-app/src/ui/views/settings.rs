@@ -183,7 +183,7 @@ fn profiles_section(ui: &mut Ui, state: &mut UiState, i18n: &I18n, backend: &Bac
     }
 
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if button(ui, &i18n.t("app.save"), ButtonKind::Primary, true).clicked() {
             if let Some(mut to_save) = state.settings_draft.clone() {
                 // Keep screen/selections from the other panels in the same

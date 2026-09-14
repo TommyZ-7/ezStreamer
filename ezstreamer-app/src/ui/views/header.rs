@@ -1,12 +1,18 @@
-//! Header bar: identity, language toggle, settings.
+//! Header bar: identity + live status, language toggle, settings.
 
+use crate::backend::Shared;
 use crate::ui::i18n::{I18n, Locale};
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
-use crate::ui::widgets::{button, segmented_sized, ButtonKind};
+use crate::ui::widgets::{button, segmented_sized, status_square, ButtonKind};
 use egui::{Align, Context, Frame, Layout, Margin, RichText, TopBottomPanel};
+use std::sync::{Arc, Mutex};
 
-pub fn show(ctx: &Context, state: &mut UiState, i18n: &I18n) {
+pub fn show(ctx: &Context, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Shared>>) {
+    let (is_live, retrying) = {
+        let shared = shared.lock().unwrap();
+        (shared.status.is_live, shared.status.retrying)
+    };
     TopBottomPanel::top("header")
         .exact_height(44.0)
         .frame(
@@ -27,6 +33,19 @@ pub fn show(ctx: &Context, state: &mut UiState, i18n: &I18n) {
                         .strong()
                         .color(TEXT),
                 );
+                // Live badge next to the title: status is visible from every
+                // tab (and settings), not only near the dock CTA.
+                if let Some(n) = retrying {
+                    status_square(ui, WARN);
+                    ui.label(
+                        RichText::new(i18n.tf("stream.retrying", &[("n", &n.to_string())]))
+                            .size(12.0)
+                            .color(WARN),
+                    );
+                } else if is_live {
+                    status_square(ui, LIVE);
+                    ui.label(RichText::new(i18n.t("stream.live")).size(12.0).color(LIVE));
+                }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if button(ui, &i18n.t("app.settings"), ButtonKind::Normal, true).clicked() {

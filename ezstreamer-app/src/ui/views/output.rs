@@ -4,7 +4,9 @@ use crate::backend::{Backend, Command, Shared};
 use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
-use crate::ui::widgets::{button, rule, small_hint, status_square, ButtonKind};
+use crate::ui::widgets::{
+    button, copy_row, label, rule, section_header, small_hint, status_square, ButtonKind,
+};
 use egui::{pos2, vec2, Align2, FontId, RichText, Sense, Stroke, StrokeKind, Ui};
 use ezstreamer_core::config::{MAX_AUDIO_KBPS, MAX_VIDEO_KBPS};
 use std::sync::{Arc, Mutex};
@@ -16,21 +18,13 @@ pub fn show(
     backend: &Backend,
     _shared: &Arc<Mutex<Shared>>,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(i18n.t("output.title"))
-                .size(14.0)
-                .strong()
-                .color(TEXT),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if button(ui, &i18n.t("output.probe"), ButtonKind::Normal, true).clicked() {
-                backend.send(Command::ProbeEncoders);
-            }
-        });
+    let title = i18n.t("output.title");
+    let probe_label = i18n.t("output.probe");
+    section_header(ui, &title, |ui| {
+        if button(ui, &probe_label, ButtonKind::Normal, true).clicked() {
+            backend.send(Command::ProbeEncoders);
+        }
     });
-    rule(ui);
-    ui.add_space(8.0);
 
     // --- profile cards ------------------------------------------------------
     if let Some(cfg) = state.profiles.clone() {
@@ -98,14 +92,7 @@ pub fn show(
 
     // --- encoder ------------------------------------------------------------
     ui.horizontal(|ui| {
-        ui.add_sized(
-            [88.0, ROW_H],
-            egui::Label::new(
-                RichText::new(i18n.t("output.encoder"))
-                    .size(12.5)
-                    .color(DIM),
-            ),
-        );
+        label(ui, &i18n.t("output.encoder"));
 
         let mut options: Vec<(String, String, bool)> =
             vec![("auto".to_string(), i18n.t("output.auto"), true)];
@@ -166,6 +153,72 @@ pub fn show(
                 }
             });
         }
+    }
+
+    // --- destination (moved out of the dock) --------------------------------
+    // Dock は状態 + CTA 専用にし、入力系はここに集約する。半分幅の横並びを
+    // やめ、全幅行を縦積みで読みやすくする。
+    ui.add_space(10.0);
+    rule(ui);
+    ui.add_space(8.0);
+    section_header(ui, &i18n.t("output.destination"), |_| {});
+
+    ui.horizontal(|ui| {
+        label(ui, &i18n.t("stream.ingest"));
+        let width = (ui.available_width() - 4.0).max(160.0);
+        let response = ui.add_sized(
+            [width, ROW_H],
+            egui::TextEdit::singleline(&mut state.ingest_url)
+                .font(egui::TextStyle::Monospace)
+                .desired_width(width),
+        );
+        if response.changed() {
+            state.mark_persist();
+        }
+    });
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        label(ui, &i18n.t("stream.key"));
+        let width = (ui.available_width() - 4.0).max(160.0);
+        let response = ui.add_sized(
+            [width, ROW_H],
+            egui::TextEdit::singleline(&mut state.stream_key)
+                .font(egui::TextStyle::Monospace)
+                .hint_text("my-event-123"),
+        );
+        if response.changed() {
+            state.mark_persist();
+        }
+    });
+    ui.add_space(2.0);
+    if let Some(key_error) = state.key_error() {
+        ui.label(RichText::new(i18n.t(key_error)).size(11.5).color(LIVE));
+    } else if state.generic_key() {
+        ui.label(
+            RichText::new(i18n.t("stream.keyGeneric"))
+                .size(11.5)
+                .color(WARN),
+        );
+    }
+    ui.add_space(4.0);
+    let key = if state.stream_key.is_empty() {
+        "your-key"
+    } else {
+        state.stream_key.as_str()
+    };
+    let (pc, quest) = ezstreamer_core::urls::playback_urls(&state.ingest_url, key);
+    if copy_row(ui, &i18n.t("stream.copyPc"), &pc, &i18n.t("stream.copy")) {
+        ui.ctx().copy_text(pc.clone());
+        state.toast(i18n.t("stream.copied"), false);
+    }
+    if copy_row(
+        ui,
+        &i18n.t("stream.copyQuest"),
+        &quest,
+        &i18n.t("stream.copy"),
+    ) {
+        ui.ctx().copy_text(quest.clone());
+        state.toast(i18n.t("stream.copied"), false);
     }
 }
 
