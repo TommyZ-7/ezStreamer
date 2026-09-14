@@ -15,7 +15,14 @@ pub struct ScreenCapture {
 
 impl ScreenCapture {
     pub fn stop(&mut self) {
+        self.stop_source();
         self.sink.stop();
+    }
+
+    pub fn stop_source(&mut self) {}
+
+    pub fn video_sink(&self) -> VideoSink {
+        self.sink.clone()
     }
 }
 
@@ -39,6 +46,18 @@ impl ScreenHandle {
     pub fn stop(&mut self) {
         match self {
             ScreenHandle::Stub(s) => s.stop(),
+        }
+    }
+
+    pub fn stop_source(&mut self) {
+        match self {
+            ScreenHandle::Stub(s) => s.stop_source(),
+        }
+    }
+
+    pub fn video_sink(&self) -> Option<VideoSink> {
+        match self {
+            ScreenHandle::Stub(s) => Some(s.video_sink()),
         }
     }
 }

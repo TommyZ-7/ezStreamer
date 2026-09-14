@@ -80,19 +80,35 @@ impl EzStreamerApp {
                 UiEvent::StreamStopped => {
                     self.state.starting = false;
                     self.state.stopping = false;
+                    self.state.switching = false;
                     self.preview_texture = None;
                 }
                 UiEvent::PreviewStarted => {}
                 UiEvent::PreviewStopped => self.preview_texture = None,
                 UiEvent::PortalPicked(target) => {
+                    let live = self.shared.lock().unwrap().status.is_live;
+                    self.state.screen = target.clone();
+                    self.state.mark_persist();
+                    if live {
+                        self.state.switching = true;
+                        self.backend.send(crate::backend::Command::SwitchScreen {
+                            screen: target,
+                            cursor: self.state.cursor,
+                        });
+                    }
+                }
+                UiEvent::ScreenSwitched(target) => {
+                    self.state.switching = false;
                     self.state.screen = target;
                     self.state.mark_persist();
+                    self.state.toast(self.i18n.t("screen.switched"), false);
                 }
                 UiEvent::Toast(message) => self.state.toast(message, false),
                 UiEvent::Error(message) => {
                     logging::error(&format!("backend: {message}"));
                     self.state.starting = false;
                     self.state.stopping = false;
+                    self.state.switching = false;
                     self.state.last_error = Some(message.clone());
                     self.state.toast(message, true);
                 }

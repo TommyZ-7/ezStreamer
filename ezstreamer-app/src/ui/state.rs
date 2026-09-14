@@ -98,6 +98,7 @@ pub struct UiState {
     pub last_error: Option<String>,
     pub starting: bool,
     pub stopping: bool,
+    pub switching: bool,
     pub persist_due: Option<Instant>,
     pub mix_due: Option<Instant>,
     pub preview_restart_due: Option<Instant>,
@@ -135,6 +136,7 @@ impl UiState {
             last_error: None,
             starting: false,
             stopping: false,
+            switching: false,
             persist_due: None,
             mix_due: None,
             preview_restart_due: None,
@@ -318,6 +320,7 @@ mod tests {
     #[test]
     fn config_roundtrip_keeps_selections() {
         let mut state = UiState::new(Locale::Ja);
+        assert!(!state.switching, "switching is transient, defaults off");
         state.apply_config(ProfilesConfig::default());
         state.stream_key = "my-key-1".into();
         state.ingest_url = "rtmp://example.test/live".into();

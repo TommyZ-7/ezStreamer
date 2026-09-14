@@ -111,6 +111,13 @@ pub struct ScreenCapture {
 
 impl ScreenCapture {
     pub fn stop(&mut self) {
+        self.stop_source();
+        self.sink.stop();
+    }
+
+    /// Stop the PipeWire worker but keep the shared `VideoSink` pump alive.
+    /// Used for live source switches (same contract as the WGC backend).
+    pub fn stop_source(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         {
             let (lk, cv) = &*self.wake;
@@ -120,7 +127,10 @@ impl ScreenCapture {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-        self.sink.stop();
+    }
+
+    pub fn video_sink(&self) -> VideoSink {
+        self.sink.clone()
     }
 }
 

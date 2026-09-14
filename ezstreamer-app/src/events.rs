@@ -16,12 +16,19 @@ pub enum UiEvent {
     Windows(Vec<WindowInfo>),
     AudioDevices(Box<AudioDevices>),
     Encoders(Vec<EncoderInfo>),
-    Preview { rgba: Arc<Vec<u8>>, w: u32, h: u32 },
+    Preview {
+        rgba: Arc<Vec<u8>>,
+        w: u32,
+        h: u32,
+    },
     StreamStarted,
     StreamStopped,
     PreviewStarted,
     PreviewStopped,
     PortalPicked(ScreenTarget),
+    /// Live screen switch completed (payload is the authoritative active
+    /// target: the new screen, or the restored previous one on rollback).
+    ScreenSwitched(ScreenTarget),
     Toast(String),
     Error(String),
 }
