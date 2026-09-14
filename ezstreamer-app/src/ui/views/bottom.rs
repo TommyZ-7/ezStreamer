@@ -1,7 +1,8 @@
-//! Bottom configuration bar (OBS-style): three fixed columns — capture
-//! source, quality/encoder, destination — sitting directly above the status
-//! bar. Each column has a fixed height and scrolls only when its content
-//! overflows. The central canvas owns everything above.
+//! Bottom configuration bar (OBS-style): three fixed columns — video
+//! source (30%), volume (40%), encoder (30%) — sitting directly above the
+//! status bar. The middle column is wider: the mixer needs room for
+//! VU + gain rows. Each column has a fixed height and scrolls only when its
+//! content overflows. The central canvas owns everything above.
 
 use crate::backend::{Backend, Shared};
 use crate::ui::i18n::I18n;
@@ -29,28 +30,32 @@ pub fn show(
                 Stroke::new(1.0_f32, LINE_STRONG),
             );
 
-            // Three equal thirds; the automatic 8px item spacing forms the
-            // gutters and the hairline dividers run through their middle.
-            let third = (ui.available_width() - 16.0) / 3.0;
+            // Column widths: source 30% / volume 40% / encoder 30%. The
+            // automatic 8px item spacing forms the two gutters; hairline
+            // dividers run through their middle.
+            let inner = ui.available_width() - 16.0;
+            let w_source = inner * 0.30;
+            let w_volume = inner * 0.40;
+            let w_encoder = inner * 0.30;
             let height = ui.available_height();
             ui.horizontal(|ui| {
-                column(ui, third, height, "bottom-sources", |ui| {
+                column(ui, w_source, height, "bottom-sources", |ui| {
                     crate::ui::views::screen::show(ui, state, i18n, backend, shared);
                 });
-                column(ui, third, height, "bottom-quality", |ui| {
-                    crate::ui::views::output::show(ui, state, i18n, backend, shared);
+                column(ui, w_volume, height, "bottom-audio", |ui| {
+                    crate::ui::views::audio::show(ui, state, i18n, shared);
                 });
-                column(ui, third, height, "bottom-destination", |ui| {
-                    crate::ui::views::destination::show(ui, state, i18n);
+                column(ui, w_encoder, height, "bottom-encoder", |ui| {
+                    crate::ui::views::output::show(ui, state, i18n, backend, shared);
                 });
             });
             ui.painter().vline(
-                rect.left() + third + 4.0,
+                rect.left() + w_source + 4.0,
                 rect.y_range(),
                 Stroke::new(1.0_f32, LINE_STRONG),
             );
             ui.painter().vline(
-                rect.left() + 2.0 * third + 12.0,
+                rect.left() + w_source + 8.0 + w_volume + 4.0,
                 rect.y_range(),
                 Stroke::new(1.0_f32, LINE_STRONG),
             );

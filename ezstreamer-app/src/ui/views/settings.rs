@@ -45,6 +45,10 @@ pub fn show(ctx: &Context, state: &mut UiState, i18n: &I18n, backend: &Backend) 
                     ui.add_space(14.0);
                     rule(ui);
                     ui.add_space(10.0);
+                    destination_section(ui, state, i18n);
+                    ui.add_space(14.0);
+                    rule(ui);
+                    ui.add_space(10.0);
                     encoders_section(ui, state, i18n, backend);
                     ui.add_space(14.0);
                     rule(ui);
@@ -209,6 +213,30 @@ fn profiles_section(ui: &mut Ui, state: &mut UiState, i18n: &I18n, backend: &Bac
             state.settings_draft = state.profiles.clone();
         }
     });
+}
+
+/// Destination (F-URL-01): the Ingest URL. Moved here from the main screen
+/// so the right panel stays key/URL/CTA only. Edited inline with the usual
+/// 400ms debounce auto-save.
+fn destination_section(ui: &mut Ui, state: &mut UiState, i18n: &I18n) {
+    ui.label(
+        RichText::new(i18n.t("stream.ingest"))
+            .size(13.0)
+            .strong()
+            .color(TEXT),
+    );
+    ui.add_space(4.0);
+    let width = (ui.available_width() - 4.0).min(480.0);
+    let response = ui.add_sized(
+        [width, ROW_H],
+        egui::TextEdit::singleline(&mut state.ingest_url)
+            .font(egui::TextStyle::Monospace)
+            .desired_width(width),
+    );
+    if response.changed() {
+        state.mark_persist();
+    }
+    small_hint(ui, &i18n.t("stream.ingestHint"));
 }
 
 fn encoders_section(ui: &mut Ui, state: &UiState, i18n: &I18n, backend: &Backend) {

@@ -14,7 +14,7 @@
     "refresh": "再読み込み"
   },
   "screen": {
-    "title": "キャプチャ元",
+    "title": "映像ソース",
     "display": "全画面",
     "window": "ウィンドウ",
     "cursor": "カーソルを表示",
@@ -34,7 +34,7 @@
     "switched": "画面を切り替えました"
   },
   "audio": {
-    "title": "音声入力",
+    "title": "音量",
     "system": "システム全体",
     "apps": "アプリ指定",
     "mic": "マイク",
@@ -47,7 +47,8 @@
     "defaultMic": "既定のマイク"
   },
   "output": {
-    "title": "画質",
+    "title": "エンコーダ",
+    "profile": "プロファイル",
     "destination": "配信先",
     "encoder": "エンコーダ",
     "auto": "自動",
@@ -67,7 +68,9 @@
     "1080p": "1080p"
   },
   "stream": {
+    "title": "配信",
     "ingest": "Ingest URL",
+    "ingestHint": "既定: rtmp://topaz.chat/live (設定画面で変更)",
     "key": "ストリームキー",
     "keyInvalid": "キーは3〜64文字の半角英数字/ハイフン/アンダースコア",
     "keyGeneric": "汎用的なキーは他の配信と衝突する恐れがあります",

@@ -14,7 +14,7 @@
     "refresh": "Refresh"
   },
   "screen": {
-    "title": "Capture source",
+    "title": "Video source",
     "display": "Full screen",
     "window": "Window",
     "cursor": "Show cursor",
@@ -34,7 +34,7 @@
     "switched": "Screen switched"
   },
   "audio": {
-    "title": "Audio inputs",
+    "title": "Volume",
     "system": "System audio",
     "apps": "Per-app",
     "mic": "Microphone",
@@ -47,7 +47,8 @@
     "defaultMic": "Default microphone"
   },
   "output": {
-    "title": "Quality",
+    "title": "Encoder",
+    "profile": "Profile",
     "destination": "Destination",
     "encoder": "Encoder",
     "auto": "Auto",
@@ -67,7 +68,9 @@
     "1080p": "1080p"
   },
   "stream": {
+    "title": "Stream",
     "ingest": "Ingest URL",
+    "ingestHint": "Default: rtmp://topaz.chat/live (change in Settings)",
     "key": "Stream key",
     "keyInvalid": "Key must be 3-64 alphanumeric/hyphen/underscore characters",
     "keyGeneric": "Generic keys risk colliding with other streams",

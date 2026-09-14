@@ -14,7 +14,7 @@ use i18n::{I18n, Locale};
 use state::UiState;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use widgets::MIXER_W;
+use widgets::SIDE_W;
 
 pub struct EzStreamerApp {
     backend: Backend,
@@ -234,15 +234,15 @@ impl EzStreamerApp {
             return;
         }
 
-        // OBS-style fixed frame (案2). Panels must be shown before the
+        // OBS-style fixed frame (案3). Panels must be shown before the
         // CentralPanel: header claims the top edge, the status bar the bottom
-        // edge, the config bar stacks above it, the right panel claims the
+        // edge, the config bar stacks above it, the stream panel claims the
         // right edge — the canvas gets whatever is left.
         views::status::show(ctx, state, i18n, shared);
         views::bottom::show(ctx, state, i18n, backend, shared);
 
         egui::SidePanel::right("side")
-            .exact_width(MIXER_W)
+            .exact_width(SIDE_W)
             .resizable(false)
             .frame(Frame::NONE.fill(theme::PANEL))
             .show(ctx, |ui| {
@@ -252,16 +252,16 @@ impl EzStreamerApp {
                     rect.y_range(),
                     Stroke::new(1.0_f32, theme::LINE_STRONG),
                 );
-                // Controls pinned to the bottom of the side panel; the mixer
-                // flexes in the rest and scrolls if it overflows.
-                egui::TopBottomPanel::bottom("controls")
+                // CTA pinned to the bottom of the side panel; key + watch
+                // URLs flex in the rest and scroll if they overflow.
+                egui::TopBottomPanel::bottom("stream-cta")
                     .frame(
                         Frame::NONE
                             .fill(theme::PANEL)
                             .inner_margin(Margin::same(12)),
                     )
                     .show_inside(ui, |ui| {
-                        views::controls::show(ui, state, i18n, backend, shared);
+                        views::stream::cta(ui, state, i18n, backend, shared);
                     });
                 egui::CentralPanel::default()
                     .frame(
@@ -271,10 +271,10 @@ impl EzStreamerApp {
                     )
                     .show_inside(ui, |ui| {
                         egui::ScrollArea::vertical()
-                            .id_salt("mixer-scroll")
+                            .id_salt("stream-scroll")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                views::audio::show(ui, state, i18n, shared);
+                                views::stream::settings(ui, state, i18n);
                             });
                     });
             });
