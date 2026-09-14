@@ -35,6 +35,7 @@ pub enum Busy {
     Starting,
     Stopping,
     Picking,
+    Switching,
 }
 
 /// Snapshot the UI polls every frame (cheap locks, no worker round-trip).
@@ -57,6 +58,12 @@ pub enum Command {
     StopPreview,
     StartStream(Box<StreamConfig>),
     StopStream,
+    /// Hot-swap the video source of a running stream without restarting the
+    /// GStreamer pipeline (the new capture reuses the same `VideoSink`).
+    SwitchScreen {
+        screen: ezstreamer_core::config::ScreenTarget,
+        cursor: bool,
+    },
     PortalPicker {
         cursor: bool,
     },
@@ -218,6 +225,11 @@ fn handle_command(
         Command::StopStream => {
             set_busy(shared, Some(Busy::Stopping));
             cmd_stop_stream(state, sink, shared);
+            set_busy(shared, None);
+        }
+        Command::SwitchScreen { screen, cursor } => {
+            set_busy(shared, Some(Busy::Switching));
+            cmd_switch_screen(screen, cursor, state, sink, shared);
             set_busy(shared, None);
         }
         Command::PortalPicker { cursor } => cmd_portal_picker(cursor, sink, shared),
@@ -476,6 +488,108 @@ fn cmd_stop_stream(state: &Arc<SessionState>, sink: &UiSink, shared: &Arc<Mutex<
         sh.previewing = false;
     }
     sink.send(UiEvent::StreamStopped);
+}
+
+/// Live screen switch: replace only the video capture, keeping the GStreamer
+/// pipeline (and audio) running. The new capture reuses the running
+/// `VideoSink`, so the FramePacer repeats the last frame across the gap and
+/// the RTMP connection never drops.
+fn cmd_switch_screen(
+    screen: ezstreamer_core::config::ScreenTarget,
+    cursor: bool,
+    state: &Arc<SessionState>,
+    sink: &UiSink,
+    _shared: &Arc<Mutex<Shared>>,
+) {
+    if state.stream.lock().unwrap().is_none() {
+        sink.error("screen", "stream is not running");
+        return;
+    }
+    // A reconnect is in flight: the retry rebuilds capture from the session,
+    // so just retarget the session and let the next attempt pick it up.
+    // Touching the live capture here would race `stop_capture_backends` in
+    // the retry thread.
+    if state.retrying.lock().unwrap().is_some() {
+        if let Some(sess) = state.session.lock().unwrap().as_mut() {
+            sess.cfg.screen = screen.clone();
+            sess.cfg.cursor = cursor;
+        }
+        sink.send(UiEvent::ScreenSwitched(screen));
+        return;
+    }
+    let (profile, prev_screen, prev_cursor) = {
+        let session = state.session.lock().unwrap();
+        let Some(sess) = session.as_ref() else {
+            sink.error("screen", "stream is not running");
+            return;
+        };
+        (
+            sess.profile.clone(),
+            sess.cfg.screen.clone(),
+            sess.cfg.cursor,
+        )
+    };
+    if prev_screen == screen && prev_cursor == cursor {
+        sink.send(UiEvent::ScreenSwitched(screen));
+        return;
+    }
+    // Take the running sink out of the old capture without stopping its pump,
+    // then stop the old source thread (joined, so no two captures overlap).
+    let vsink = {
+        let mut slot = state.screen.lock().unwrap();
+        let Some(handle) = slot.as_mut() else {
+            sink.error("screen", "stream is not running");
+            return;
+        };
+        let Some(vsink) = handle.video_sink() else {
+            sink.error("screen", "current capture cannot be switched");
+            return;
+        };
+        handle.stop_source();
+        vsink
+    };
+    logging::info(&format!(
+        "switch_screen: {} -> {} (cursor={})",
+        prev_screen.id, screen.id, cursor
+    ));
+    match cap::start_screen(sink.clone(), &screen, &profile, vsink.clone(), cursor) {
+        Ok(next) => {
+            *state.screen.lock().unwrap() = Some(cap::make_handle(next));
+            if let Some(sess) = state.session.lock().unwrap().as_mut() {
+                sess.cfg.screen = screen.clone();
+                sess.cfg.cursor = cursor;
+            }
+            sink.send(UiEvent::ScreenSwitched(screen));
+        }
+        Err(e) => {
+            let msg = portable_err(e);
+            logging::error(&format!("switch_screen to {} failed: {msg}", screen.id));
+            // Roll back to the previous source so the stream keeps showing
+            // something instead of freezing on the pacer's last frame.
+            match cap::start_screen(sink.clone(), &prev_screen, &profile, vsink, prev_cursor) {
+                Ok(prev) => {
+                    *state.screen.lock().unwrap() = Some(cap::make_handle(prev));
+                    sink.send(UiEvent::ScreenSwitched(prev_screen));
+                    sink.error(
+                        "screen",
+                        format!("switch failed ({msg}); restored previous screen"),
+                    );
+                }
+                Err(e2) => {
+                    // Old source is gone too; the pipeline stays alive on the
+                    // pacer's last frame until the user picks another source.
+                    *state.screen.lock().unwrap() = None;
+                    sink.error(
+                        "screen",
+                        format!(
+                            "switch failed ({msg}); restore also failed: {}",
+                            portable_err(e2)
+                        ),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// F-ST-04: respawn the whole pipeline with exponential backoff, at most
@@ -836,5 +950,125 @@ mod tests {
         let sel = AudioSelection::default();
         assert_eq!(sel.mode, "");
         assert!(sel.apps.is_empty());
+    }
+
+    fn test_state() -> (
+        Arc<SessionState>,
+        UiSink,
+        Arc<Mutex<Shared>>,
+        mpsc::Receiver<UiEvent>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let sink = UiSink::new(tx);
+        let state = Arc::new(SessionState::new(ProfilesConfig::default()));
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        (state, sink, shared, rx)
+    }
+
+    fn screen_target(id: &str) -> ezstreamer_core::config::ScreenTarget {
+        ezstreamer_core::config::ScreenTarget {
+            kind: ezstreamer_core::config::ScreenTargetKind::Display,
+            id: id.into(),
+        }
+    }
+
+    #[test]
+    fn switch_when_idle_errors() {
+        let (state, sink, shared, rx) = test_state();
+        cmd_switch_screen(screen_target("monitor:1"), true, &state, &sink, &shared);
+        match rx.try_recv().expect("expected an event") {
+            UiEvent::Error(msg) => assert!(msg.contains("not running"), "msg: {msg}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_same_target_is_noop_success() {
+        let (state, sink, shared, rx) = test_state();
+        let target = screen_target("monitor:0");
+        let profile = Profile {
+            name: "mid".into(),
+            w: 1280,
+            h: 720,
+            fps: 30,
+            v_kbps: 1500,
+            a_kbps: 192,
+            encoder: "auto".into(),
+            warn: None,
+        };
+        let cfg = StreamConfig {
+            screen: target.clone(),
+            cursor: true,
+            ..StreamConfig::default()
+        };
+        let plan = gst::build_plan(
+            &profile,
+            "auto",
+            &[],
+            "rtmp://topaz.chat/live",
+            "abc123",
+            None,
+        )
+        .expect("test plan builds");
+        *state.session.lock().unwrap() = Some(StreamSession {
+            cfg,
+            plan: plan.clone(),
+            profile,
+            mixer: Arc::new(Mutex::new(Mixer::default())),
+        });
+        *state.stream.lock().unwrap() = Some(gst_stream::GstStream::for_test(plan, 0));
+        cmd_switch_screen(target.clone(), true, &state, &sink, &shared);
+        match rx.try_recv().expect("expected an event") {
+            UiEvent::ScreenSwitched(got) => assert_eq!(got, target),
+            other => panic!("expected ScreenSwitched, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_during_retry_only_retargets_session() {
+        let (state, sink, shared, rx) = test_state();
+        let old = screen_target("monitor:0");
+        let next = screen_target("monitor:1");
+        let profile = Profile {
+            name: "mid".into(),
+            w: 1280,
+            h: 720,
+            fps: 30,
+            v_kbps: 1500,
+            a_kbps: 192,
+            encoder: "auto".into(),
+            warn: None,
+        };
+        let cfg = StreamConfig {
+            screen: old,
+            cursor: true,
+            ..StreamConfig::default()
+        };
+        let plan = gst::build_plan(
+            &profile,
+            "auto",
+            &[],
+            "rtmp://topaz.chat/live",
+            "abc123",
+            None,
+        )
+        .expect("test plan builds");
+        *state.session.lock().unwrap() = Some(StreamSession {
+            cfg,
+            plan: plan.clone(),
+            profile,
+            mixer: Arc::new(Mutex::new(Mixer::default())),
+        });
+        *state.stream.lock().unwrap() = Some(gst_stream::GstStream::for_test(plan, 1));
+        *state.retrying.lock().unwrap() = Some(1);
+        cmd_switch_screen(next.clone(), false, &state, &sink, &shared);
+        match rx.try_recv().expect("expected an event") {
+            UiEvent::ScreenSwitched(got) => assert_eq!(got, next),
+            other => panic!("expected ScreenSwitched, got {other:?}"),
+        }
+        let session = state.session.lock().unwrap();
+        let sess = session.as_ref().expect("session kept");
+        assert_eq!(sess.cfg.screen, next);
+        assert!(!sess.cfg.cursor);
     }
 }

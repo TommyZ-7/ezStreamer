@@ -91,6 +91,23 @@ impl GstStream {
     pub fn mark_retrying(&self, n: u32) {
         self.status.lock().unwrap().retrying = Some(n);
     }
+
+    #[cfg(test)]
+    pub fn for_test(plan: StreamPlan, retry: u32) -> Self {
+        Self {
+            plan,
+            retry_count: retry,
+            started_at: Instant::now(),
+            video_frames: Arc::new(AtomicU64::new(0)),
+            encoded_bytes: Arc::new(AtomicU64::new(0)),
+            status: Arc::new(Mutex::new(
+                ezstreamer_core::ipc_types::StreamStatus::default(),
+            )),
+            done: Arc::new(Mutex::new(None)),
+            stop: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        }
+    }
 }
 
 /// Spawn the pipeline thread. Returns the stream handle once the pipeline

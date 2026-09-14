@@ -24,11 +24,23 @@ pub struct ScreenCapture {
 
 impl ScreenCapture {
     pub fn stop(&mut self) {
+        self.stop_source();
+        self.sink.stop();
+    }
+
+    /// Stop the capture thread but keep the shared `VideoSink` pump alive.
+    /// Used for live source switches: the new capture reuses the same sink
+    /// so the GStreamer pipeline never stalls (FramePacer repeats the last
+    /// frame across the gap).
+    pub fn stop_source(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-        self.sink.stop();
+    }
+
+    pub fn video_sink(&self) -> VideoSink {
+        self.sink.clone()
     }
 }
 

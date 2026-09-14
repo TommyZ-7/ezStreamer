@@ -32,7 +32,11 @@
     "previewEmpty": "No preview",
     "previewStart": "Start preview",
     "previewStop": "Stop preview",
-    "previewHint": "Pick a screen and start the preview to see a 1 fps check image"
+    "previewHint": "Pick a screen and start the preview to see a 1 fps check image",
+    "liveHint": "You can switch the screen while live",
+    "livePreviewHint": "Showing the live feed. Switch from the selection above",
+    "switching": "Switching screen…",
+    "switched": "Screen switched"
   },
   "audio": {
     "title": "Audio inputs",

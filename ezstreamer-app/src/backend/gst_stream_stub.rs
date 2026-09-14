@@ -35,6 +35,11 @@ impl GstStream {
     pub fn stop(&mut self) {}
 
     pub fn mark_retrying(&self, _n: u32) {}
+
+    #[cfg(test)]
+    pub fn for_test(_plan: StreamPlan, retry: u32) -> Self {
+        Self { retry_count: retry }
+    }
 }
 
 pub fn spawn_pipeline(
