@@ -3,8 +3,8 @@
 //! A dedicated thread owns the D3D11 device and the capture pool/session; the
 //! FrameArrived handler (free-threaded) copies the surface to a staging
 //! texture, scales to the profile size and pushes into the shared pump via
-//! the [`VideoSource`] handle. Preview PNGs (1fps, 640x360) are emitted as
-//! `stream://preview` events.
+//! the [`VideoSource`] handle. Preview frames (5fps, 640x360 RGBA) are sent
+//! straight to the UI (no GStreamer involved).
 
 use super::{co_init, err};
 use crate::events::UiSink;
@@ -255,9 +255,9 @@ fn run_capture(
 
                     source2.push(scale_bgra(&buf, w, h, dst_w, dst_h));
 
-                    // 1fps preview (F-SC-03): raw RGBA straight to the UI.
+                    // 5fps preview (F-SC-03): raw RGBA straight to the UI.
                     let mut last = preview_last2.lock().unwrap();
-                    if last.elapsed() >= Duration::from_secs(1) {
+                    if last.elapsed() >= crate::capture::PREVIEW_INTERVAL {
                         *last = Instant::now();
                         let small = scale_bgra(&buf, w, h, PREVIEW_W, PREVIEW_H);
                         let rgba = bgra_to_rgba(&small);

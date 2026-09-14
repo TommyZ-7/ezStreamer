@@ -302,7 +302,7 @@ pub fn start_screen(
                             return;
                         };
                         ud.source.push(frame.clone());
-                        // park the newest frame for the 1fps preview thread
+                        // park the newest frame for the 5fps preview thread
                         if let Ok(mut slot) = ud.preview_frame.lock() {
                             if slot.is_none() {
                                 *slot = Some(frame);
@@ -430,22 +430,22 @@ pub fn start_screen(
         }
     }
 
-    // F-SC-03 preview: 1fps 640x360 RGBA → UI (design §6.4). Runs off the
+    // F-SC-03 preview: 5fps 640x360 RGBA → UI (design §6.4). Runs off the
     // PipeWire RT thread; the process callback parks the newest frame in
-    // `preview_slot` and this thread converts/emits at 1fps.
+    // `preview_slot` and this thread converts/emits at 5fps.
     {
         let slot = preview_slot.clone();
         let preview_stop = stop.clone();
         std::thread::Builder::new()
             .name("preview".into())
             .spawn(move || {
-                let mut last = Instant::now() - Duration::from_secs(1);
+                let mut last = Instant::now() - crate::capture::PREVIEW_INTERVAL;
                 loop {
                     if preview_stop.load(Ordering::Relaxed) {
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(50));
-                    if last.elapsed() < Duration::from_secs(1) {
+                    if last.elapsed() < crate::capture::PREVIEW_INTERVAL {
                         continue;
                     }
                     let Some(frame) = slot.lock().unwrap().take() else {
