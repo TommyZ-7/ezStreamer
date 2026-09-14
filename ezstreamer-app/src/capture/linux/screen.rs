@@ -2,7 +2,8 @@
 //!
 //! - Screen/window: xdg-desktop-portal ScreenCast. The OS picker is the only
 //!   selection path (no app-side window enumeration); the returned PipeWire
-//!   node is captured as BGRA frames → scale to profile → [`VideoSink`].
+//!   node is captured as BGRA frames → scale to profile → shared pump via
+//!   the [`VideoSource`] handle.
 //!
 //! Compile verification happens in CI (`cargo check -p ezstreamer` with the
 //! default `media` feature on Ubuntu 24.04); runtime needs a Wayland +
@@ -11,7 +12,7 @@
 use super::{CaptureError, Result};
 use crate::events::UiSink;
 use ezstreamer_core::config::{Profile, ScreenTarget, ScreenTargetKind};
-use ezstreamer_core::video::{bgra_to_rgba, scale_bgra, scale_bgra_strided, VideoSink};
+use ezstreamer_core::video::{bgra_to_rgba, scale_bgra, scale_bgra_strided, VideoSource};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa::param::ParamType;
@@ -100,7 +101,10 @@ pub async fn portal_picker(cursor: bool) -> Result<ScreenTarget> {
 // screen capture
 
 pub struct ScreenCapture {
-    pub sink: VideoSink,
+    /// Push-only handle to the session-owned pump (see `VideoSource`): a
+    /// stopped or dropped capture must never stop frame pacing — live source
+    /// switches reuse the pump across captures.
+    pub source: VideoSource,
     stop: Arc<AtomicBool>,
     /// Wake channel for the worker's park loop. The worker owns the PipeWire
     /// loop and stops it itself; stop() only signals + joins, never touching
@@ -110,14 +114,10 @@ pub struct ScreenCapture {
 }
 
 impl ScreenCapture {
+    /// Stop the PipeWire worker and join it. The video pump is owned by the
+    /// backend session (`backend::SessionState::video_pump`), not by
+    /// captures, so this never stops frame pacing.
     pub fn stop(&mut self) {
-        self.stop_source();
-        self.sink.stop();
-    }
-
-    /// Stop the PipeWire worker but keep the shared `VideoSink` pump alive.
-    /// Used for live source switches (same contract as the WGC backend).
-    pub fn stop_source(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         {
             let (lk, cv) = &*self.wake;
@@ -127,10 +127,6 @@ impl ScreenCapture {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
-    }
-
-    pub fn video_sink(&self) -> VideoSink {
-        self.sink.clone()
     }
 }
 
@@ -146,7 +142,7 @@ pub fn start_screen(
     // picked via portal_picker() is authoritative (preview → stream reuse).
     _screen: &ScreenTarget,
     profile: &Profile,
-    sink: VideoSink,
+    source: VideoSource,
     // Portal embeds the cursor at pick time (CursorMode::Hidden); reserved.
     _cursor: bool,
 ) -> Result<ScreenCapture> {
@@ -164,7 +160,7 @@ pub fn start_screen(
     let wake: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
     let wake2 = wake.clone();
     let stop2 = stop.clone();
-    let sink2 = sink.clone();
+    let source2 = source.clone();
     let preview_slot: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let preview_slot2 = preview_slot.clone();
     let dst_w = profile.w;
@@ -226,7 +222,7 @@ pub fn start_screen(
 
             struct Ud {
                 format: pw::spa::param::video::VideoInfoRaw,
-                sink: VideoSink,
+                source: VideoSource,
                 stop: Arc<AtomicBool>,
                 preview_frame: Arc<Mutex<Option<Vec<u8>>>>,
                 dst_w: u32,
@@ -234,7 +230,7 @@ pub fn start_screen(
             }
             let ud = Ud {
                 format: pw::spa::param::video::VideoInfoRaw::new(),
-                sink: sink2,
+                source: source2,
                 stop: stop2.clone(),
                 preview_frame: preview_slot2,
                 dst_w,
@@ -305,7 +301,7 @@ pub fn start_screen(
                             );
                             return;
                         };
-                        ud.sink.push(frame.clone());
+                        ud.source.push(frame.clone());
                         // park the newest frame for the 1fps preview thread
                         if let Ok(mut slot) = ud.preview_frame.lock() {
                             if slot.is_none() {
@@ -424,7 +420,7 @@ pub fn start_screen(
                 _ => "PipeWire capture setup timed out".to_string(),
             };
             ScreenCapture {
-                sink,
+                source,
                 stop,
                 wake,
                 handle: Some(handle),
@@ -465,7 +461,7 @@ pub fn start_screen(
     }
 
     Ok(ScreenCapture {
-        sink,
+        source,
         stop,
         wake,
         handle: Some(handle),

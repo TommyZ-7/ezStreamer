@@ -1,9 +1,11 @@
 //! Video frame pump: capture frames → FramePacer → GStreamer `appsrc`.
 //!
-//! Capture backends push frames through [`VideoSink::push`]; the pump thread
-//! emits them at the profile fps (static screens keep flowing, design §3.1.3)
-//! All frames are normalized to the profile size before emit. Clonable so
-//! capture callbacks can hold a handle.
+//! Capture backends push frames through a [`VideoSource`] (push-only); the
+//! pump thread emits them at the profile fps (static screens keep flowing,
+//! design §3.1.3). All frames are normalized to the profile size before
+//! emit. The pump is owned by [`VideoSink`], which only the backend session
+//! holds: captures come and go without ever stopping frame pacing (a stale
+//! capture's `Drop` must not kill a pump that a newer capture feeds).
 
 use super::FramePacer;
 use crate::error::{Error, Result};
@@ -15,9 +17,28 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// Push-only handle to a [`VideoSink`]'s pump. Capture backends hold this —
+/// never a [`VideoSink`] — so a stopped or dropped capture can never stop
+/// frame pacing: the backend session owns the pump and reuses it across live
+/// source switches (review 2026-09-14: the old capture's `Drop` used to kill
+/// the shared pump mid-stream and froze the video leg until restart).
 #[derive(Clone)]
-pub struct VideoSink {
+pub struct VideoSource {
     tx: Arc<mpsc::Sender<Vec<u8>>>,
+}
+
+impl VideoSource {
+    /// Push a freshly captured (already scaled) frame. Returns false when
+    /// the pump is gone (stopped or dropped).
+    pub fn push(&self, frame: Vec<u8>) -> bool {
+        self.tx.send(frame).is_ok()
+    }
+}
+
+/// Owner of the frame pump (the pacer thread). Not `Clone`: the backend
+/// session holds exactly one and hands [`VideoSource`] handles to captures.
+pub struct VideoSink {
+    source: VideoSource,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
@@ -75,7 +96,11 @@ impl VideoSink {
         let handle = spawn_pump(rx, stop.clone(), w, h, fps, move |frame| {
             writer.write_all(frame).is_ok()
         })?;
-        Ok(Self { tx: Arc::new(tx), stop, handle: Arc::new(Mutex::new(Some(handle))) })
+        Ok(Self {
+            source: VideoSource { tx: Arc::new(tx) },
+            stop,
+            handle: Arc::new(Mutex::new(Some(handle))),
+        })
     }
 
     /// `appsrc` pump: paced BGRA frames are sent to the returned channel;
@@ -89,14 +114,18 @@ impl VideoSink {
             out_tx.send(frame.to_vec()).is_ok()
         })?;
         Ok((
-            Self { tx: Arc::new(tx), stop, handle: Arc::new(Mutex::new(Some(handle))) },
+            Self {
+                source: VideoSource { tx: Arc::new(tx) },
+                stop,
+                handle: Arc::new(Mutex::new(Some(handle))),
+            },
             out_rx,
         ))
     }
 
-    /// Push a freshly captured (already scaled) frame. Returns false when stopped.
-    pub fn push(&self, frame: Vec<u8>) -> bool {
-        self.tx.send(frame).is_ok()
+    /// Push-only handle for capture backends (cannot stop the pump).
+    pub fn source(&self) -> VideoSource {
+        self.source.clone()
     }
 
     pub fn stop(&self) {
@@ -337,6 +366,17 @@ pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sink_drop_stops_pump_even_with_live_source_clone() {
+        // Ownership contract: the pump dies with its `VideoSink` owner, and
+        // capture-side `VideoSource` clones cannot keep it alive — captures
+        // must never be able to stop (or outlive) frame pacing mid-stream.
+        let (sink, _rx) = VideoSink::spawn_appsrc(4, 4, 30).unwrap();
+        let source = sink.source();
+        drop(sink);
+        assert!(!source.push(vec![0u8; 4 * 4 * 4]), "pump must be gone");
+    }
 
     #[test]
     fn scale_identity() {
