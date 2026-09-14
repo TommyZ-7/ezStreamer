@@ -1,6 +1,6 @@
-# ezStreamer 詳細設計書 v0.3
+# ezStreamer 詳細設計書 v0.4
 
-> 作成日: 2026-09-04 | 更新日: 2026-09-11 | 要件定義書: `docs/requirements.md` v0.2 対応 | ステータス: Draft
+> 作成日: 2026-09-04 | 更新日: 2026-09-14 | 要件定義書: `docs/requirements.md` v0.4 対応 | ステータス: Draft
 > 派生元: ezTopaz 詳細設計書 v0.2。キャプチャ・ミキシング・UIは継承し、FFmpeg sidecar連携 (§4) とエンコーダprobe (§8.1) をGStreamer化。
 > v0.2 (2026-09-10): Linux (Portal ScreenCast + PipeWire / Flatpak) 対応を追記。実装レビュー修正
 > (NVENC `high-performance`、映像PTSの実時間化、appsrc backpressure、openh264enc単位、ファイルログ、
@@ -8,6 +8,9 @@
 > v0.3 (2026-09-11): GUI を Tauri + React から **ネイティブ egui/eframe** へ移行 (§2, §5, §6)。
 > UI要件として「直線的でつながりのあるレイアウト」「絵文字・グラデーション禁止」を追加。NSIS は
 > 自作スクリプト (`packaging/windows/ezstreamer.nsi`) で生成し、IPC/フロントエンドビルドを廃止。
+> v0.4 (2026-09-14): UI を OBS 風固定レイアウトへ再構成 (§2.1, §6)。ステップレールを廃止し
+> 「中央プレビューキャンバス + 右ミキサー/操作 + 下部3区画 + ステータスバー」に変更。
+> プレビューを 1fps → 5fps に改善 (§3.1, §5.2)。
 
 ---
 
@@ -28,8 +31,8 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  egui UI (eframe, ja/en, native)                        │
-│   Header / StepRail / Screen / Audio / Output /         │
-│   StreamDock / Settings                                 │
+│   Header / Preview canvas / Mixer / Controls /          │
+│   BottomBar / StatusBar / Settings                      │
 └──────────────────────┬──────────────────────────────────┘
               Rust channels (Command / UiEvent)
 ┌──────────────────────▼──────────────────────────────────┐
@@ -92,7 +95,7 @@ ezStreamer/
 | 全画面 | `WGC: GraphicsCaptureItem::CreateForMonitor` | マルチモニタは `HMONITOR` 列挙 |
 | ウィンドウ | `WGC: CreateForWindow(HWND)` | 最小化ウィンドウは警告。`ddagrab` は廃止 (GStreamerにデバイス入力は使わず `appsrc` 統一) |
 | カーソル | `GraphicsCaptureSession::IncludeCursor` | ON/OFF切替 |
-| プレビュー | Rust側で 640x360 に縮小 → 1fps に間引き 生RGBA を `UiEvent::Preview` でeguiへ送信 | GStreamer経由しない |
+| プレビュー | Rust側で 640x360 に縮小 → 5fps に間引き 生RGBA を `UiEvent::Preview` でeguiへ送信 | GStreamer経由しない (`PREVIEW_INTERVAL`=200ms) |
 
 ### 3.1.3 フレーム供給ポリシー
 
@@ -111,7 +114,7 @@ WGCはフレームをコンテンツ変化時にのみ供給し、かつソー�
 
 - **選択:** xdg-desktop-portal ScreenCast (`ashpd 0.7`)。OSピッカーで monitor/window を選択し、PipeWire remote fd と node id を取得する (アプリ側のウィンドウ列挙は行わない)。カーソルは `CursorMode` (`Embedded`/`Hidden`、初期ON)
 - **取得:** 専用スレッドで PipeWire `ThreadLoop` + `StreamBox` を動かし、`process` コールバックで BGRA を取得 → `scale_bgra` でプロファイル解像度へ → `VideoSink`
-- **プレビュー:** 最新フレームを1枚保持し、別スレッドが1fpsで 640x360 RGBA へ変換して `UiSink` 経由でUIへ送る
+- **プレビュー:** 最新フレームを1枚保持し、別スレッドが5fpsで 640x360 RGBA へ変換して `UiSink` 経由でUIへ送る
 - **セッション:** Portal state は `static` に保持し preview→stream で再利用。プロセス再起動後は再ピッカーが必要 (永続化しない)
 - **注意:** PipeWire オブジェクト操作は loop lock を保持して行い、停止は自前 condvar で worker に通知する (生ポインタを跨いだ停止をしない)
 
@@ -221,7 +224,7 @@ enum Command {
 ```rust
 enum UiEvent {
     Config(ProfilesConfig), Displays(..), Windows(..), AudioDevices(..), Encoders(..),
-    Preview { rgba, w, h },          // 配信前 1fps、生RGBA
+    Preview { rgba, w, h },          // 5fps、生RGBA
     StreamStarted, StreamStopped, PreviewStarted, PreviewStopped,
     PortalPicked(ScreenTarget),
     Toast(String), Error(String),
@@ -255,15 +258,26 @@ v0.2追加: `StreamConfig.cursor` (F-SC-04) と `StreamConfig.appMix` (F-AU-04�
 
 ```
 EzStreamerApp
- ├─ Header: ezStreamer | LIVE 00:12 + bitrate | ja/en | 設定
- ├─ StepRail (左): 01 画面 → 02 音声 → 03 出力 (番号四角を縦線で接続)
- ├─ Central: 選択中ステップ
- │   ├─ Screen: モード + 一覧 (Windows) / Portalピッカー (Linux) + 16:9プレビュー
- │   ├─ Audio: マスターVU + System/Apps + per-app VU/mute/gain + mic
- │   └─ Output: プロファイルカード + エンコーダ選択/使用可否
- ├─ StreamDock (下固定): Ingest/Key + PC/Quest URLコピー + 大トグル
+ ├─ Header: ezStreamer | LIVE/再接続バッジ | ja/en | 設定
+ ├─ Central: プレビューキャンバス (16:9, 常時) + プレビュー開始/停止
+ ├─ SidePanel (右, 340px 固定):
+ │   ├─ Mixer: マスターVU + System/Apps + per-app VU/mute/gain + mic
+ │   │         (内容が溢れた場合のみ内部スクロール)
+ │   └─ Controls (パネル最下部固定): 配信開始/停止 大トグル (208x38)
+ │                                  + PC/Quest 視聴URLコピー
+ ├─ BottomBar (下, 240px 固定, 3区画 = ヘアライン区切り):
+ │   ├─ Sources: モード + 一覧 (Windows) / Portalピッカー (Linux) + カーソル
+ │   ├─ Quality: プロファイルカード + エンコーダ選択/使用可否
+ │   └─ Destination: Ingest/Key 入力 (+検証結果)
+ ├─ StatusBar (最下部, 30px): 再接続 n/3 / LIVE kbps+ドロップ / 起動中・停止中 /
+ │                            エラー / キー検証 / 未選択ヒント | バージョン
  └─ Settings (全画面ペイン): Profiles CRUD + JSON入出力 + Encoder + Logs/Licenses
 ```
+
+- 配置トークンは `ui/widgets.rs` (`MIXER_W`=340 / `BOTTOM_H`=240 / CTA 208x38)。
+  中央キャンバスはパネル確定後の残域すべてを使い、16:9 を保って幅に合わせる。
+- 配信中はキャプチャ自体がプレビュー経路 (5fps) に供給するため、
+  配信中のキャンバスも同じテクスチャで更新される。
 
 - 状態は `UiState` (純データ・egui非依存) + `I18n`。バックエンド状態は `Shared`。
 - 失敗はインライン赤表示 + トースト (下部中央、エラーは赤枠)。
