@@ -1,4 +1,6 @@
-//! Step 3: quality profile + encoder selection (F-EN-01..05).
+//! Quality: profile cards + encoder selection (F-EN-01..05). Shown in the
+//! middle column of the bottom bar (`views/bottom.rs`); destination inputs
+//! live in `views/destination.rs`.
 
 use crate::backend::{Backend, Command, Shared};
 use crate::ui::i18n::I18n;
@@ -110,7 +112,7 @@ pub fn show(
             state.encoder_override.clone()
         };
         egui::ComboBox::from_id_salt("encoder-select")
-            .width(240.0)
+            .width((ui.available_width() - 4.0).min(240.0))
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 for (id, label, usable) in &options {
@@ -153,52 +155,6 @@ pub fn show(
                 }
             });
         }
-    }
-
-    // --- destination ---------------------------------------------------------
-    // 視聴URLのコピー行は右サイドの controls に移設。ここは Ingest/Key の
-    // 入力と検証結果の表示に専念する。
-    ui.add_space(10.0);
-    rule(ui);
-    ui.add_space(8.0);
-    section_header(ui, &i18n.t("output.destination"), |_| {});
-
-    ui.horizontal(|ui| {
-        label(ui, &i18n.t("stream.ingest"));
-        let width = (ui.available_width() - 4.0).max(160.0);
-        let response = ui.add_sized(
-            [width, ROW_H],
-            egui::TextEdit::singleline(&mut state.ingest_url)
-                .font(egui::TextStyle::Monospace)
-                .desired_width(width),
-        );
-        if response.changed() {
-            state.mark_persist();
-        }
-    });
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        label(ui, &i18n.t("stream.key"));
-        let width = (ui.available_width() - 4.0).max(160.0);
-        let response = ui.add_sized(
-            [width, ROW_H],
-            egui::TextEdit::singleline(&mut state.stream_key)
-                .font(egui::TextStyle::Monospace)
-                .hint_text("my-event-123"),
-        );
-        if response.changed() {
-            state.mark_persist();
-        }
-    });
-    ui.add_space(2.0);
-    if let Some(key_error) = state.key_error() {
-        ui.label(RichText::new(i18n.t(key_error)).size(11.5).color(LIVE));
-    } else if state.generic_key() {
-        ui.label(
-            RichText::new(i18n.t("stream.keyGeneric"))
-                .size(11.5)
-                .color(WARN),
-        );
     }
 }
 

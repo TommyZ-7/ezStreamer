@@ -6,7 +6,7 @@ use crate::backend::{Backend, Command, Shared};
 use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
-use crate::ui::widgets::{button, section_header, small_hint, ButtonKind};
+use crate::ui::widgets::{button, checkbox, section_header, small_hint, ButtonKind};
 use egui::{pos2, vec2, Align2, FontId, RichText, Sense, Stroke, StrokeKind, Ui};
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +26,8 @@ pub fn show(
         )
     };
 
-    // --- section header: title left, cursor + reload right (max 2) --------
+    // --- section header: title left, reload right ----------------------------
+    // カーソル切替は見出し行の外に独立行 (下部バーは区画幅が狭いため)。
     let title = i18n.t("screen.title");
     let cursor_label = i18n.t("screen.cursor");
     let reload_label = i18n.t("screen.reload");
@@ -34,22 +35,21 @@ pub fn show(
         if button(ui, &reload_label, ButtonKind::Normal, true).clicked() {
             backend.send(Command::RefreshSources);
         }
-        ui.add_space(6.0);
-        let mut cursor = state.cursor;
-        if crate::ui::widgets::checkbox(ui, &mut cursor, &cursor_label).clicked() {
-            let changed = cursor != state.cursor;
-            state.cursor = cursor;
-            state.mark_persist();
-            // Windows embeds the cursor at capture start, so a live toggle
-            // needs a source switch. On Linux the cursor mode is fixed at
-            // pick time: only persist, the next picker applies it.
-            if changed && live && !cfg!(target_os = "linux") {
-                switch_live(state, backend, shared);
-            } else {
-                restart_preview_if_needed(state, shared);
-            }
-        }
     });
+    let mut cursor = state.cursor;
+    if checkbox(ui, &mut cursor, &cursor_label).clicked() {
+        let changed = cursor != state.cursor;
+        state.cursor = cursor;
+        state.mark_persist();
+        // Windows embeds the cursor at capture start, so a live toggle
+        // needs a source switch. On Linux the cursor mode is fixed at
+        // pick time: only persist, the next picker applies it.
+        if changed && live && !cfg!(target_os = "linux") {
+            switch_live(state, backend, shared);
+        } else {
+            restart_preview_if_needed(state, shared);
+        }
+    }
     if live {
         small_hint(ui, &i18n.t("screen.liveHint"));
     }
@@ -75,14 +75,17 @@ pub fn show(
                 });
             }
             if state.screen.id.starts_with("portal:") {
-                ui.label(
-                    RichText::new(format!(
-                        "{} {}",
-                        i18n.t("screen.portalSelected"),
-                        state.screen.id
-                    ))
-                    .size(12.0)
-                    .color(OK),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "{} {}",
+                            i18n.t("screen.portalSelected"),
+                            state.screen.id
+                        ))
+                        .size(12.0)
+                        .color(OK),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             }
         });
