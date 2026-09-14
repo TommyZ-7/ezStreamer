@@ -209,7 +209,7 @@ impl EzStreamerApp {
             ..
         } = self;
 
-        views::header::show(ctx, state, i18n);
+        views::header::show(ctx, state, i18n, shared);
 
         if state.settings_open {
             views::settings::show(ctx, state, i18n, backend);
@@ -226,12 +226,19 @@ impl EzStreamerApp {
                     .fill(theme::BG)
                     .inner_margin(Margin::symmetric(20, 14)),
             )
-            .show(ctx, |ui| match state.tab {
-                Tab::Screen => {
-                    views::screen::show(ui, state, i18n, backend, shared, preview_texture)
-                }
-                Tab::Audio => views::audio::show(ui, state, i18n, shared),
-                Tab::Output => views::output::show(ui, state, i18n, backend, shared),
+            .show(ctx, |ui| {
+                // 出力タブに配信先が集約されて縦に長くなったため、
+                // 全タブをスクロール対応にする (横幅は固定のまま)。
+                egui::ScrollArea::vertical()
+                    .id_salt("main-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match state.tab {
+                        Tab::Screen => {
+                            views::screen::show(ui, state, i18n, backend, shared, preview_texture)
+                        }
+                        Tab::Audio => views::audio::show(ui, state, i18n, shared),
+                        Tab::Output => views::output::show(ui, state, i18n, backend, shared),
+                    });
             });
 
         draw_toast(ctx, state);

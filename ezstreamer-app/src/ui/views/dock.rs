@@ -1,12 +1,15 @@
-//! Bottom dock: ingest / key / playback URLs / big start-stop toggle.
+//! Bottom dock: status + single primary CTA (Start/Stop).
 //! Always visible (requirements §7: 配信開始ボタンは常時下部固定) and divided
 //! from the content by a single hairline.
+//!
+//! 入力系 (ingest/key/視聴URL) は `output` タブの「配信先」に集約し、
+//! ここは状態表示と開始/停止の1ボタンに専念させる。
 
 use crate::backend::{Backend, Busy, Command, Shared};
 use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
-use crate::ui::widgets::{copy_row, small_hint, status_square};
+use crate::ui::widgets::{primary_cta, small_hint, status_square};
 use egui::{Context, Frame, Margin, RichText, Stroke, TopBottomPanel};
 use std::sync::{Arc, Mutex};
 
@@ -40,70 +43,6 @@ pub fn show(
                 Stroke::new(1.0_f32, LINE_STRONG),
             );
 
-            // ingest + key (stacked full-width rows for breathing room)
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [96.0, ROW_H],
-                    egui::Label::new(RichText::new(i18n.t("stream.ingest")).size(12.5).color(DIM)),
-                );
-                let width = (ui.available_width() - 4.0).max(160.0);
-                let response = ui.add_sized(
-                    [width, ROW_H],
-                    egui::TextEdit::singleline(&mut state.ingest_url)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(width),
-                );
-                if response.changed() {
-                    state.mark_persist();
-                }
-            });
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [96.0, ROW_H],
-                    egui::Label::new(RichText::new(i18n.t("stream.key")).size(12.5).color(DIM)),
-                );
-                let width = (ui.available_width() - 4.0).max(160.0);
-                let response = ui.add_sized(
-                    [width, ROW_H],
-                    egui::TextEdit::singleline(&mut state.stream_key)
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text("my-event-123"),
-                );
-                if response.changed() {
-                    state.mark_persist();
-                }
-            });
-
-            ui.add_space(2.0);
-            let key = if state.stream_key.is_empty() {
-                "your-key"
-            } else {
-                state.stream_key.as_str()
-            };
-            let (pc, quest) = ezstreamer_core::urls::playback_urls(&state.ingest_url, key);
-            ui.horizontal(|ui| {
-                let half = (ui.available_width() - 16.0) / 2.0;
-                ui.allocate_ui(egui::vec2(half, ROW_H), |ui| {
-                    if copy_row(ui, &i18n.t("stream.copyPc"), &pc, &i18n.t("stream.copy")) {
-                        ui.ctx().copy_text(pc.clone());
-                        state.toast(i18n.t("stream.copied"), false);
-                    }
-                });
-                ui.allocate_ui(egui::vec2(half, ROW_H), |ui| {
-                    if copy_row(
-                        ui,
-                        &i18n.t("stream.copyQuest"),
-                        &quest,
-                        &i18n.t("stream.copy"),
-                    ) {
-                        ui.ctx().copy_text(quest.clone());
-                        state.toast(i18n.t("stream.copied"), false);
-                    }
-                });
-            });
-
-            ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if let Some(retry) = status.retrying {
                     status_square(ui, WARN);
@@ -154,35 +93,12 @@ pub fn show(
                     let enabled = if active {
                         !busy_stop && !busy_start
                     } else {
+                        // 画面未選択でも開始押下自体は許可し、不足は
+                        // backend 側エラー + 出力タブの field hint で案内する。
+                        // ここではキー不正のみを開始不可にする。
                         state.key_error().is_none() && !busy_start && !busy_stop
                     };
-                    let widget = egui::Button::new(
-                        RichText::new(label).size(15.0).strong().color(if enabled {
-                            TEXT
-                        } else {
-                            FAINT
-                        }),
-                    )
-                    .fill(if !enabled {
-                        PANEL
-                    } else if active {
-                        LIVE_BG
-                    } else {
-                        ACCENT_BG
-                    })
-                    .stroke(Stroke::new(
-                        1.0_f32,
-                        if !enabled {
-                            LINE
-                        } else if active {
-                            LIVE
-                        } else {
-                            ACCENT
-                        },
-                    ))
-                    .corner_radius(0.0)
-                    .min_size(egui::vec2(208.0, 38.0));
-                    if ui.add_enabled(enabled, widget).clicked() {
+                    if primary_cta(ui, &label, active, enabled).clicked() {
                         if active {
                             state.stopping = true;
                             state.last_error = None;

@@ -8,6 +8,15 @@ use egui::{
     pos2, vec2, Align2, Color32, FontId, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui,
 };
 
+/// Product-level layout tokens (案1: 3ゾーン固定).
+/// - セクション見出しは左タイトル + 右に最大2アクションで統一
+/// - フォーム行ラベルは 96px 固定で縦に揃える
+/// - セカンダリボタンは最小幅 96px、CTA は 208x38 単一で統一
+pub const LABEL_W: f32 = 96.0;
+pub const BTN_MIN_W: f32 = 96.0;
+pub const CTA_W: f32 = 208.0;
+pub const CTA_H: f32 = 38.0;
+
 /// Flat button variants: normal (panel), primary (accent), danger (live).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -26,7 +35,7 @@ pub fn button(ui: &mut Ui, label: &str, kind: ButtonKind, enabled: bool) -> Resp
         .fill(fill)
         .stroke(Stroke::new(1.0_f32, stroke))
         .corner_radius(0.0)
-        .min_size(vec2(0.0, ROW_H));
+        .min_size(vec2(BTN_MIN_W, ROW_H));
     if enabled {
         ui.add(widget)
     } else {
@@ -36,17 +45,49 @@ pub fn button(ui: &mut Ui, label: &str, kind: ButtonKind, enabled: bool) -> Resp
                 .fill(PANEL)
                 .stroke(Stroke::new(1.0_f32, LINE))
                 .corner_radius(0.0)
-                .min_size(vec2(0.0, ROW_H)),
+                .min_size(vec2(BTN_MIN_W, ROW_H)),
         )
     }
 }
 
+/// Single primary call-to-action (配信開始/停止・保存のみが使う).
+/// Dock の 208x38 ボタンをここに集約し、見た目のブレをなくす。
+pub fn primary_cta(ui: &mut Ui, label: &str, danger: bool, enabled: bool) -> Response {
+    let (fill, stroke) = if !enabled {
+        (PANEL, LINE)
+    } else if danger {
+        (LIVE_BG, LIVE)
+    } else {
+        (ACCENT_BG, ACCENT)
+    };
+    let fg = if enabled { TEXT } else { FAINT };
+    let widget = egui::Button::new(RichText::new(label).size(15.0).strong().color(fg))
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, stroke))
+        .corner_radius(0.0)
+        .min_size(vec2(CTA_W, CTA_H));
+    ui.add_enabled(enabled, widget)
+}
+
+/// Section header: left title + right actions (max 2) + hairline.
+/// 全タブで同じリズムにするための唯一の見出しパターン。
+pub fn section_header(ui: &mut Ui, title: &str, add_actions: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).size(14.0).strong().color(TEXT));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            add_actions(ui);
+        });
+    });
+    rule(ui);
+    ui.add_space(6.0);
+}
+
 pub fn icon_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     let widget = egui::Button::new(RichText::new(label).color(DIM).size(12.0))
-        .fill(Color32::TRANSPARENT)
+        .fill(PANEL_2)
         .stroke(Stroke::new(1.0_f32, LINE_STRONG))
         .corner_radius(0.0)
-        .min_size(vec2(56.0, 22.0));
+        .min_size(vec2(64.0, ROW_H));
     ui.add_enabled(enabled, widget)
 }
 
@@ -162,16 +203,7 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     painter.rect_stroke(
         box_rect,
         0.0,
-        Stroke::new(
-            1.0_f32,
-            if *checked {
-                ACCENT
-            } else if response.hovered() {
-                LINE_STRONG
-            } else {
-                LINE_STRONG
-            },
-        ),
+        Stroke::new(1.0_f32, if *checked { ACCENT } else { LINE_STRONG }),
         StrokeKind::Inside,
     );
     painter.text(
@@ -269,7 +301,7 @@ pub fn vu_bar(ui: &mut Ui, width: f32, height: f32, level: f32) {
 /// Fixed-width dim label used to align form rows.
 pub fn label(ui: &mut Ui, text: &str) {
     ui.add_sized(
-        vec2(88.0, ROW_H),
+        vec2(LABEL_W, ROW_H),
         egui::Label::new(RichText::new(text).color(DIM).size(12.5))
             .wrap_mode(egui::TextWrapMode::Truncate),
     );

@@ -49,6 +49,7 @@
   },
   "output": {
     "title": "画質",
+    "destination": "配信先",
     "encoder": "エンコーダ",
     "auto": "自動",
     "checkingEncoders": "エンコーダを確認中…",

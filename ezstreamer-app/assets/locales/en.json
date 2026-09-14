@@ -49,6 +49,7 @@
   },
   "output": {
     "title": "Quality",
+    "destination": "Destination",
     "encoder": "Encoder",
     "auto": "Auto",
     "checkingEncoders": "Checking encoders…",

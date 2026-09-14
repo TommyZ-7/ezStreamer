@@ -4,7 +4,7 @@ use crate::backend::{Backend, Command, Shared};
 use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
-use crate::ui::widgets::{button, rule, small_hint, ButtonKind};
+use crate::ui::widgets::{button, section_header, small_hint, ButtonKind};
 use egui::{
     pos2, vec2, Align2, Color32, FontId, RichText, Sense, Stroke, StrokeKind, TextureHandle, Ui,
 };
@@ -21,27 +21,21 @@ pub fn show(
     let busy_picking = shared.lock().unwrap().busy == Some(crate::backend::Busy::Picking);
     let previewing = shared.lock().unwrap().previewing;
 
-    // --- section header -----------------------------------------------------
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(i18n.t("screen.title"))
-                .size(14.0)
-                .strong()
-                .color(TEXT),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut cursor = state.cursor;
-            if crate::ui::widgets::checkbox(ui, &mut cursor, &i18n.t("screen.cursor")).clicked() {
-                state.cursor = cursor;
-                state.mark_persist();
-            }
-            if button(ui, &i18n.t("screen.reload"), ButtonKind::Normal, true).clicked() {
-                backend.send(Command::RefreshSources);
-            }
-        });
+    // --- section header: title left, cursor + reload right (max 2) --------
+    let title = i18n.t("screen.title");
+    let cursor_label = i18n.t("screen.cursor");
+    let reload_label = i18n.t("screen.reload");
+    section_header(ui, &title, |ui| {
+        if button(ui, &reload_label, ButtonKind::Normal, true).clicked() {
+            backend.send(Command::RefreshSources);
+        }
+        ui.add_space(6.0);
+        let mut cursor = state.cursor;
+        if crate::ui::widgets::checkbox(ui, &mut cursor, &cursor_label).clicked() {
+            state.cursor = cursor;
+            state.mark_persist();
+        }
     });
-    rule(ui);
-    ui.add_space(6.0);
 
     // --- source selection ---------------------------------------------------
     if cfg!(target_os = "linux") {
