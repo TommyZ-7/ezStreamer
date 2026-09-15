@@ -7,9 +7,7 @@ use crate::backend::{Backend, Command, Shared};
 use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
-use crate::ui::widgets::{
-    button, label, section_header, small_hint, status_square, ButtonKind,
-};
+use crate::ui::widgets::{button, section_header, small_hint, status_square, ButtonKind};
 use egui::{RichText, Ui};
 use ezstreamer_core::config::{MAX_AUDIO_KBPS, MAX_VIDEO_KBPS};
 use std::sync::{Arc, Mutex};
@@ -50,7 +48,7 @@ pub fn show(
             }
         };
         egui::ComboBox::from_id_salt("profile-select")
-            .width((ui.available_width() - 4.0).max(160.0))
+            .width(ui.available_width())
             .selected_text(selected_label)
             .show_ui(ui, |ui| {
                 for id in &ids {
@@ -107,9 +105,13 @@ pub fn show(
     ui.add_space(6.0);
 
     // --- encoder -------------------------------------------------------------
-    ui.horizontal(|ui| {
-        label(ui, &i18n.t("output.encoder"));
-
+    // Label above, combo full width below: the old single-line
+    // "96px label + combo" always overflowed the 30% column.
+    ui.label(
+        RichText::new(i18n.t("output.encoder")).size(12.5).color(DIM),
+    );
+    ui.add_space(2.0);
+    {
         let mut options: Vec<(String, String, bool)> =
             vec![("auto".to_string(), i18n.t("output.auto"), true)];
         for encoder in &state.encoders {
@@ -126,7 +128,7 @@ pub fn show(
             state.encoder_override.clone()
         };
         egui::ComboBox::from_id_salt("encoder-select")
-            .width((ui.available_width() - 4.0).min(240.0))
+            .width(ui.available_width())
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 for (id, label, usable) in &options {
@@ -138,7 +140,7 @@ pub fn show(
                     ui.selectable_value(&mut state.encoder_override, id.clone(), text);
                 }
             });
-    });
+    }
     if state
         .encoders
         .iter()

@@ -9,7 +9,7 @@ use crate::ui::i18n::I18n;
 use crate::ui::state::UiState;
 use crate::ui::theme::*;
 use crate::ui::widgets::BOTTOM_H;
-use egui::{Context, Frame, Margin, Stroke, TopBottomPanel, Ui};
+use egui::{Align, Context, Frame, Layout, Margin, Stroke, TopBottomPanel, Ui};
 use std::sync::{Arc, Mutex};
 
 pub fn show(
@@ -21,6 +21,7 @@ pub fn show(
 ) {
     TopBottomPanel::bottom("bottom")
         .exact_height(BOTTOM_H)
+        .resizable(false)
         .frame(Frame::NONE.fill(PANEL).inner_margin(Margin::same(10)))
         .show(ctx, |ui| {
             let rect = ui.max_rect();
@@ -38,7 +39,10 @@ pub fn show(
             let w_volume = inner * 0.40;
             let w_encoder = inner * 0.30;
             let height = ui.available_height();
-            ui.horizontal(|ui| {
+            // Top-align the three columns. `horizontal_top` keeps every
+            // column at the panel top; the old centered `horizontal` pushed
+            // short content to the middle of the 280px bar.
+            ui.horizontal_top(|ui| {
                 column(ui, w_source, height, "bottom-sources", |ui| {
                     crate::ui::views::screen::show(ui, state, i18n, backend, shared);
                 });
@@ -69,10 +73,18 @@ fn column(
     salt: &'static str,
     add: impl FnOnce(&mut Ui),
 ) {
-    ui.allocate_ui(egui::vec2(width, height), |ui| {
-        egui::ScrollArea::vertical()
-            .id_salt(salt)
-            .auto_shrink([false, false])
-            .show(ui, |ui| add(ui));
-    });
+    // `allocate_ui` inherits the parent (horizontal) layout, which laid every
+    // widget in the column left-to-right on one centered line and let narrow
+    // rows bleed into the next column. Pin a vertical layout so each column
+    // stacks its own rows from the top.
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        Layout::top_down(Align::Min),
+        |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(salt)
+                .auto_shrink([false, false])
+                .show(ui, |ui| add(ui));
+        },
+    );
 }
