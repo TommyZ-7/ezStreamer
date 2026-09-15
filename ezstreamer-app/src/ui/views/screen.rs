@@ -58,37 +58,40 @@ pub fn show(
     }
 
     // --- source selection ---------------------------------------------------
+    // Narrow column: stack rows vertically, never pack two variable-width
+    // widgets on one line. Every control takes the full column width.
     if cfg!(target_os = "linux") {
         // Wayland/Portal: the OS picker is the selection surface.
         // Live switches go through PortalPicked -> SwitchScreen (ui/mod.rs).
-        ui.horizontal(|ui| {
-            if button(
-                ui,
-                &i18n.t("screen.portalPicker"),
-                ButtonKind::Primary,
-                !busy_picking && !busy_switching,
-            )
-            .clicked()
-            {
-                backend.send(Command::PortalPicker {
-                    cursor: state.cursor,
-                });
-            }
-            if state.screen.id.starts_with("portal:") {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!(
-                            "{} {}",
-                            i18n.t("screen.portalSelected"),
-                            state.screen.id
-                        ))
-                        .size(12.0)
-                        .color(OK),
-                    )
-                    .wrap_mode(egui::TextWrapMode::Truncate),
-                );
-            }
-        });
+        // Button on its own row, status below: the "button + long id" single
+        // line always overflowed the 30% column.
+        if button(
+            ui,
+            &i18n.t("screen.portalPicker"),
+            ButtonKind::Primary,
+            !busy_picking && !busy_switching,
+        )
+        .clicked()
+        {
+            backend.send(Command::PortalPicker {
+                cursor: state.cursor,
+            });
+        }
+        if state.screen.id.starts_with("portal:") {
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{} {}",
+                        i18n.t("screen.portalSelected"),
+                        state.screen.id
+                    ))
+                    .size(12.0)
+                    .color(OK),
+                )
+                .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+        }
     } else {
         let labels = vec![i18n.t("screen.display"), i18n.t("screen.window")];
         let selected = if state.screen.kind == ezstreamer_core::config::ScreenTargetKind::Display {
@@ -130,7 +133,9 @@ pub fn show(
             if displays.is_empty() {
                 small_hint(ui, &i18n.t("screen.none"));
             } else {
-                ui.horizontal_wrapped(|ui| {
+                // Full-width vertical list: wrapped chips in a 30% column
+                // produced ragged half-rows and clipped labels.
+                ui.vertical(|ui| {
                     for display in &displays {
                         let is_selected = state.screen.id == display.id;
                         if choice_chip(
@@ -145,6 +150,7 @@ pub fn show(
                             state.mark_persist();
                             apply_source_change(state, backend, shared, live);
                         }
+                        ui.add_space(4.0);
                     }
                 });
             }
@@ -155,7 +161,7 @@ pub fn show(
             } else {
                 let mut current = state.screen.id.clone();
                 egui::ComboBox::from_id_salt("window-select")
-                    .width((ui.available_width() - 8.0).min(520.0))
+                    .width(ui.available_width())
                     .selected_text(
                         windows
                             .iter()
@@ -224,8 +230,9 @@ fn restart_preview_if_needed(state: &mut UiState, shared: &Arc<Mutex<Shared>>) {
 }
 
 fn choice_chip(ui: &mut Ui, text: &str, selected: bool) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width().min(240.0), ROW_H), Sense::click());
+    // Full column width: the old capped (240px) wrapped chips left
+    // half-empty rows in the narrow source column.
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let painter = ui.painter();
     let fill = if selected {
         ACCENT_BG

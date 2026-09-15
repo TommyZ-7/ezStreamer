@@ -1,10 +1,14 @@
 //! Step 2: audio sources, per-source VU/gain/mute (F-AU-01..06).
+//! Shown in the middle column of the bottom bar (`views/bottom.rs`).
+//! Narrow-column layout: every row stacks vertically — label/value line,
+//! then a full-width VU, then a gain line. No row packs VU + slider +
+//! value on one horizontal line (that always overflowed the 40% column).
 
 use crate::backend::Shared;
 use crate::ui::i18n::I18n;
 use crate::ui::state::{AppMixEntry, AudioMode, UiState};
 use crate::ui::theme::*;
-use crate::ui::widgets::{checkbox, label, section_header, small_hint, vu_bar};
+use crate::ui::widgets::{checkbox, section_header, small_hint, vu_bar};
 use egui::{RichText, Sense, Ui};
 use ezstreamer_core::config::MicSource;
 use std::sync::{Arc, Mutex};
@@ -15,19 +19,22 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
 
     section_header(ui, &i18n.t("audio.title"), |_| {});
 
-    // F-ST-03: master VU over the mixed output.
-    // ミキサーパネルは幅が狭いため、VU はラベル+数値を除いた幅に合わせる。
+    // --- master: label + value line, VU full width below --------------------
     ui.horizontal(|ui| {
-        label(ui, &i18n.t("audio.master"));
-        let bar_w = (ui.available_width() - 40.0).max(60.0);
-        vu_bar(ui, bar_w, 12.0, vu.master.rms);
-        ui.label(
-            RichText::new(format!("{:.2}", vu.master.rms))
-                .monospace()
-                .size(11.0)
-                .color(FAINT),
+        ui.label(RichText::new(i18n.t("audio.master")).size(12.5).color(DIM));
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    RichText::new(format!("{:.2}", vu.master.rms))
+                        .monospace()
+                        .size(11.0)
+                        .color(FAINT),
+                );
+            },
         );
     });
+    vu_bar(ui, ui.available_width(), 12.0, vu.master.rms);
     ui.add_space(6.0);
 
     // --- mode ---------------------------------------------------------------
@@ -47,10 +54,7 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
     }
     ui.add_space(8.0);
 
-    // --- per-app list: 1 app = 2 rows ------------------------------------
-    // Row 1: [checkbox name ........ mute right]
-    // Row 2: [indent VU + gain slider + value]
-    // Single-horizontal詰め込みをやめ、幅に依らず折り返さない固定形にする。
+    // --- per-app list: 1 app = name/mute line + VU line + gain line ---------
     if state.audio_mode == AudioMode::Apps {
         match &state.devices {
             None => small_hint(ui, &i18n.t("audio.noApps")),
@@ -85,30 +89,20 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                     });
                     if selected {
                         let entry = state.app_mix_entry(&app.id);
-                        ui.horizontal(|ui| {
-                            ui.add_space(20.0);
-                            let bar_w = (ui.available_width() - 150.0).max(60.0);
-                            vu_bar(
-                                ui,
-                                bar_w,
-                                10.0,
-                                vu.apps.get(&app.id).map(|v| v.rms).unwrap_or(0.0),
-                            );
-                            let mut gain = entry.gain;
-                            if crate::ui::widgets::slider(ui, &mut gain, 0.0..=2.0).changed() {
-                                state.set_app_mix(
-                                    &app.id,
-                                    AppMixEntry {
-                                        gain,
-                                        muted: entry.muted,
-                                    },
-                                );
-                            }
-                            ui.label(
-                                RichText::new(format!("{:.2}", gain))
-                                    .monospace()
-                                    .size(11.0)
-                                    .color(FAINT),
+                        ui.add_space(2.0);
+                        vu_bar(
+                            ui,
+                            ui.available_width(),
+                            10.0,
+                            vu.apps.get(&app.id).map(|v| v.rms).unwrap_or(0.0),
+                        );
+                        gain_row(ui, i18n, entry.gain, |gain| {
+                            state.set_app_mix(
+                                &app.id,
+                                AppMixEntry {
+                                    gain,
+                                    muted: entry.muted,
+                                },
                             );
                         });
                     }
@@ -119,7 +113,7 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
         ui.add_space(6.0);
     }
 
-    // --- microphone: same 2-row shape as apps ------------------------------
+    // --- microphone: enable/mute line, device combo, VU, gain ---------------
     crate::ui::widgets::rule(ui);
     ui.add_space(6.0);
     let inputs = state
@@ -130,6 +124,7 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
     let mic_snapshot = state.mic.clone();
     let mic_label = i18n.t("audio.mic");
     let mute_label = i18n.t("audio.mute");
+    let gain_label = i18n.t("audio.gain");
     let default_mic_label = i18n.t("audio.defaultMic");
     ui.horizontal(|ui| {
         let mut enabled = mic_snapshot.enabled;
@@ -139,6 +134,20 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                 ..mic_snapshot.clone()
             });
         }
+        if mic_snapshot.enabled {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut muted = mic_snapshot.muted;
+                if checkbox(ui, &mut muted, &mute_label).clicked() {
+                    state.set_mic(MicSource {
+                        muted,
+                        ..mic_snapshot.clone()
+                    });
+                }
+            });
+        }
+    });
+    ui.add_space(2.0);
+    {
         let selected_label = if mic_snapshot.device == "default" {
             default_mic_label.clone()
         } else {
@@ -149,9 +158,8 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                 .unwrap_or_else(|| mic_snapshot.device.clone())
         };
         let mut device = mic_snapshot.device.clone();
-        let combo_w = (ui.available_width() - 110.0).clamp(80.0, 220.0);
         egui::ComboBox::from_id_salt("mic-device")
-            .width(combo_w)
+            .width(ui.available_width())
             .selected_text(selected_label)
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -169,43 +177,23 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                 ..mic_snapshot.clone()
             });
         }
-        if mic_snapshot.enabled {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut muted = mic_snapshot.muted;
-                if checkbox(ui, &mut muted, &mute_label).clicked() {
-                    state.set_mic(MicSource {
-                        muted,
-                        ..mic_snapshot.clone()
-                    });
-                }
-            });
-        }
-    });
+    }
     if mic_snapshot.enabled {
+        ui.add_space(2.0);
+        vu_bar(
+            ui,
+            ui.available_width(),
+            10.0,
+            vu.mic.as_ref().map(|m| m.rms).unwrap_or(0.0),
+        );
         let mic_gain = mic_snapshot.gain;
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            let bar_w = (ui.available_width() - 150.0).max(60.0);
-            vu_bar(
-                ui,
-                bar_w,
-                10.0,
-                vu.mic.as_ref().map(|m| m.rms).unwrap_or(0.0),
-            );
-            let mut gain = mic_gain;
-            if crate::ui::widgets::slider(ui, &mut gain, 0.0..=2.0).changed() {
-                state.set_mic(MicSource {
-                    gain,
-                    ..mic_snapshot.clone()
-                });
-            }
-            ui.label(
-                RichText::new(format!("{:.2}", gain))
-                    .monospace()
-                    .size(11.0)
-                    .color(FAINT),
-            );
+        gain_row(ui, i18n, mic_gain, |gain| {
+            state.set_mic(MicSource {
+                gain,
+                ..mic_snapshot.clone()
+            });
         });
+        let _ = &gain_label;
     }
     if inputs_empty(&state.devices) {
         small_hint(ui, &i18n.t("audio.noInputs"));
@@ -215,6 +203,28 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
         small_hint(ui, &i18n.t("audio.liveHint"));
     }
     let _ = Sense::hover();
+}
+
+/// Gain line: small label + fixed slider + monospace value. The three parts
+/// total ~200px and always fit the narrowest (~280px) column.
+fn gain_row(ui: &mut Ui, i18n: &I18n, current: f32, on_change: impl FnOnce(f32)) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(i18n.t("audio.gain"))
+                .size(11.5)
+                .color(DIM),
+        );
+        let mut gain = current;
+        if crate::ui::widgets::slider(ui, &mut gain, 0.0..=2.0).changed() {
+            on_change(gain);
+        }
+        ui.label(
+            RichText::new(format!("{:.2}", gain))
+                .monospace()
+                .size(11.0)
+                .color(FAINT),
+        );
+    });
 }
 
 fn inputs_empty(devices: &Option<ezstreamer_core::ipc_types::AudioDevices>) -> bool {
