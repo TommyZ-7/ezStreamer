@@ -282,7 +282,7 @@ impl EzStreamerApp {
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(theme::BG).inner_margin(Margin::same(16)))
             .show(ctx, |ui| {
-                views::preview::show(ui, state, i18n, backend, shared, preview_texture);
+                views::preview::show(ui, i18n, preview_texture);
             });
 
         draw_toast(ctx, state);
