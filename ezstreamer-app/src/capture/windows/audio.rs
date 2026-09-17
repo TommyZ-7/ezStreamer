@@ -329,6 +329,11 @@ unsafe fn wasapi_polling(
     let mut signal_frames: u64 = 0;
     let mut saw_signal = false;
     let mut saw_silent = false;
+    // Peak (max |sample|) of signal content in the current 5s window.
+    // A "signal" flag with peak 0 means the device feeds digital zeros
+    // (OS-level mute, privacy block, or nothing rendered) — distinct from
+    // SILENT-flagged packets and from an empty queue.
+    let mut peak_max: f32 = 0.0;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -376,10 +381,14 @@ unsafe fn wasapi_polling(
                     let block = resample_stereo(&stereo, rate, TARGET_RATE);
                     signal_frames += (block.len() / 2) as u64;
                     signal_blocks += 1;
+                    let peak = block.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+                    if peak > peak_max {
+                        peak_max = peak;
+                    }
                     if !saw_signal {
                         saw_signal = true;
                         crate::logging::info(&format!(
-                            "wasapi {id}: first signal block ({frames} frames)"
+                            "wasapi {id}: first signal block ({frames} frames, peak={peak:.6})"
                         ));
                     }
                     if !sink.push(&id, block) {
@@ -411,9 +420,10 @@ unsafe fn wasapi_polling(
         }
         if std::time::Instant::now() >= next_stats {
             crate::logging::info(&format!(
-                "wasapi {id} stats: polls={polls} empty={empty_polls} signal_blocks={signal_blocks} silent_blocks={silent_blocks} signal_frames={signal_frames}"
+                "wasapi {id} stats: polls={polls} empty={empty_polls} signal_blocks={signal_blocks} silent_blocks={silent_blocks} signal_frames={signal_frames} peak_max={peak_max:.6}"
             ));
             next_stats = std::time::Instant::now() + Duration::from_secs(5);
+            peak_max = 0.0;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
