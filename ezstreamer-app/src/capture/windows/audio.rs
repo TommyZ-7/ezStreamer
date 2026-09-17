@@ -224,18 +224,21 @@ use windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_LOOPBACK;
 
 /// One-line description of a WASAPI mix format for the log (tag/bits/rate/ch).
 /// `fmt` comes from `IAudioClient::GetMixFormat` (possibly WAVEFORMATEXTENSIBLE).
+/// NOTE: `WAVEFORMATEX` is a packed struct in the `windows` crate, so every
+/// field access must go through `addr_of!` + `read_unaligned` (E0793).
 unsafe fn describe_format(fmt: *const windows::Win32::Media::Audio::WAVEFORMATEX) -> String {
     if fmt.is_null() {
         return "null".into();
     }
-    let f = &*fmt;
-    let mut s = format!(
-        "tag={:#06x} ch={} rate={} bits={} cbSize={}",
-        f.wFormatTag, f.nChannels, f.nSamplesPerSec, f.wBitsPerSample, f.cbSize
-    );
+    let tag: u16 = std::ptr::addr_of!((*fmt).wFormatTag).read_unaligned();
+    let ch: u16 = std::ptr::addr_of!((*fmt).nChannels).read_unaligned();
+    let rate: u32 = std::ptr::addr_of!((*fmt).nSamplesPerSec).read_unaligned();
+    let bits: u16 = std::ptr::addr_of!((*fmt).wBitsPerSample).read_unaligned();
+    let cb: u16 = std::ptr::addr_of!((*fmt).cbSize).read_unaligned();
+    let mut s = format!("tag={tag:#06x} ch={ch} rate={rate} bits={bits} cbSize={cb}");
     // WAVE_FORMAT_EXTENSIBLE (0xFFFE): the float/PCM discriminator lives in
     // the trailing SubFormat GUID (data1 3 = float, 1 = PCM).
-    if f.wFormatTag == 0xFFFE && f.cbSize >= 22 {
+    if tag == 0xFFFE && cb >= 22 {
         let base = fmt as *const u8;
         let data1 = (base.add(24) as *const u32).read_unaligned();
         s.push_str(&format!(" subfmt_data1={data1}"));
@@ -253,13 +256,15 @@ unsafe fn check_float_format(
     if fmt.is_null() {
         return Err(err("WASAPI mix format is null"));
     }
-    let f = &*fmt;
+    let tag: u16 = std::ptr::addr_of!((*fmt).wFormatTag).read_unaligned();
+    let bits: u16 = std::ptr::addr_of!((*fmt).wBitsPerSample).read_unaligned();
+    let cb: u16 = std::ptr::addr_of!((*fmt).cbSize).read_unaligned();
     const IEEE_FLOAT: u16 = 3;
     const EXTENSIBLE: u16 = 0xFFFE;
-    if f.wFormatTag == IEEE_FLOAT && f.wBitsPerSample == 32 {
+    if tag == IEEE_FLOAT && bits == 32 {
         return Ok(());
     }
-    if f.wFormatTag == EXTENSIBLE && f.wBitsPerSample == 32 && f.cbSize >= 22 {
+    if tag == EXTENSIBLE && bits == 32 && cb >= 22 {
         let base = fmt as *const u8;
         let data1 = (base.add(24) as *const u32).read_unaligned();
         if data1 == 3 {
