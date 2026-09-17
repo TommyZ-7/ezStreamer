@@ -6,7 +6,7 @@
 
 pub mod sink;
 
-pub use sink::{f32le_bytes, AudioSink, MIC_ID};
+pub use sink::{f32le_bytes, AudioSink, SinkStats, MIC_ID};
 
 use crate::error::Result;
 use crate::ipc_types::{SourceGain, VuLevel, VuMeter};

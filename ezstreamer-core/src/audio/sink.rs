@@ -32,6 +32,45 @@ pub struct AudioSink {
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     pub mixer: Arc<Mutex<Mixer>>,
     pub last_vu: Arc<Mutex<VuMeter>>,
+    pub stats: Arc<Mutex<SinkStats>>,
+}
+
+/// Pump counters for diagnosis (which stage drops the audio: capture push,
+/// mixer emit, or the GStreamer feeder). Lock-free readers poll
+/// [`AudioSink::stats`]; the mixer thread is the only writer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SinkStats {
+    /// blocks received from capture threads
+    pub received: u64,
+    /// mixed blocks forwarded to the consumer
+    pub emitted: u64,
+    /// silence blocks emitted while no source had data
+    pub silent_emits: u64,
+    /// peak |sample| of the last emitted mixed block
+    pub last_peak: f32,
+    /// max `last_peak` since the last [`SinkStats::take_peak_max`] reset
+    pub peak_max: f32,
+}
+
+impl SinkStats {
+    fn on_receive(&mut self) {
+        self.received += 1;
+    }
+
+    fn on_emit(&mut self, out: &[f32]) {
+        self.emitted += 1;
+        let peak = out.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        self.last_peak = peak;
+        if peak > self.peak_max {
+            self.peak_max = peak;
+        }
+    }
+
+    fn on_silence(&mut self) {
+        self.emitted += 1;
+        self.silent_emits += 1;
+        self.last_peak = 0.0;
+    }
 }
 
 impl AudioSink {
@@ -40,14 +79,23 @@ impl AudioSink {
         let (tx, rx) = mpsc::channel::<(String, Vec<f32>)>();
         let stop = Arc::new(AtomicBool::new(false));
         let last_vu = Arc::new(Mutex::new(VuMeter::default()));
+        let stats = Arc::new(Mutex::new(SinkStats::default()));
         let handle = spawn_mixer(
             rx,
             stop.clone(),
             mixer.clone(),
             last_vu.clone(),
+            stats.clone(),
             move |out| writer.write_all(&f32le_bytes(&out)).is_ok(),
         )?;
-        Ok(Self { tx, stop, handle: Arc::new(Mutex::new(Some(handle))), mixer, last_vu })
+        Ok(Self {
+            tx,
+            stop,
+            handle: Arc::new(Mutex::new(Some(handle))),
+            mixer,
+            last_vu,
+            stats,
+        })
     }
 
     /// `appsrc` pump: mixed F32LE stereo blocks (48kHz) are sent to the
@@ -60,15 +108,24 @@ impl AudioSink {
         let (out_tx, out_rx) = mpsc::channel::<Vec<f32>>();
         let stop = Arc::new(AtomicBool::new(false));
         let last_vu = Arc::new(Mutex::new(VuMeter::default()));
+        let stats = Arc::new(Mutex::new(SinkStats::default()));
         let handle = spawn_mixer(
             rx,
             stop.clone(),
             mixer.clone(),
             last_vu.clone(),
+            stats.clone(),
             move |out| out_tx.send(out).is_ok(),
         )?;
         Ok((
-            Self { tx, stop, handle: Arc::new(Mutex::new(Some(handle))), mixer, last_vu },
+            Self {
+                tx,
+                stop,
+                handle: Arc::new(Mutex::new(Some(handle))),
+                mixer,
+                last_vu,
+                stats,
+            },
             out_rx,
         ))
     }
@@ -107,6 +164,7 @@ fn spawn_mixer(
     stop: Arc<AtomicBool>,
     mixer: Arc<Mutex<Mixer>>,
     last_vu: Arc<Mutex<VuMeter>>,
+    stats: Arc<Mutex<SinkStats>>,
     mut emit: impl FnMut(Vec<f32>) -> bool + Send + 'static,
 ) -> Result<JoinHandle<()>> {
     std::thread::Builder::new()
@@ -121,6 +179,7 @@ fn spawn_mixer(
                     Ok((id, block)) => {
                         auto_register(&mixer, &id);
                         queues.entry(id).or_default().extend(block);
+                        stats.lock().unwrap().on_receive();
                     }
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -128,6 +187,7 @@ fn spawn_mixer(
                 while let Ok((id, block)) = rx.try_recv() {
                     auto_register(&mixer, &id);
                     queues.entry(id).or_default().extend(block);
+                    stats.lock().unwrap().on_receive();
                 }
 
                 // mix the shortest available run across sources that have data
@@ -144,6 +204,7 @@ fn spawn_mixer(
                     if !emit(vec![0.0; BLOCK]) {
                         return; // consumer gone
                     }
+                    stats.lock().unwrap().on_silence();
                     *last_vu.lock().unwrap() = VuMeter::default();
                     continue;
                 }
@@ -167,6 +228,7 @@ fn spawn_mixer(
                     .collect();
 
                 let (out, vu) = mixer.lock().unwrap().mix(&apps, mic_slice);
+                stats.lock().unwrap().on_emit(&out);
                 if !emit(out) {
                     return; // consumer gone
                 }
@@ -289,5 +351,31 @@ mod tests {
         let b = f32le_bytes(&v);
         assert_eq!(b.len(), 12);
         assert_eq!(f32::from_le_bytes(b[0..4].try_into().unwrap()), 0.5);
+    }
+
+    #[test]
+    fn stats_track_receive_emit_and_peak() {
+        let mixer = Arc::new(Mutex::new(Mixer::default()));
+        let (sink, out_rx) = AudioSink::spawn_appsrc(mixer).unwrap();
+        sink.push("a", vec![0.25; BLOCK]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            if out_rx.recv_timeout(Duration::from_millis(200)).is_err() {
+                break;
+            }
+            let st = *sink.stats.lock().unwrap();
+            if st.emitted > 0 {
+                break;
+            }
+        }
+        let st = *sink.stats.lock().unwrap();
+        assert!(st.received >= 1, "received: {st:?}");
+        assert!(st.emitted >= 1, "emitted: {st:?}");
+        assert!((st.last_peak - 0.25).abs() < 1e-6, "peak: {st:?}");
+        assert!((st.peak_max - 0.25).abs() < 1e-6, "peak_max: {st:?}");
+        sink.stop();
     }
 }
