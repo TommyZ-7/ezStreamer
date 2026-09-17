@@ -41,6 +41,10 @@ pub fn start_audio(
             "no audio source selected".into(),
         ));
     }
+    crate::logging::info(&format!(
+        "wasapi start: mode={} mic_enabled={} mic_device={} apps={:?}",
+        selection.mode, selection.mic.enabled, selection.mic.device, valid_apps
+    ));
 
     if selection.mode == "system" {
         let sink2 = sink.clone();
@@ -159,6 +163,9 @@ fn run_system_loopback(sink: AudioSink, stop: Arc<AtomicBool>) -> Result<()> {
             .Activate(windows::Win32::System::Com::CLSCTX_ALL, None)
             .map_err(err)?;
         let fmt = client.GetMixFormat().map_err(err)?;
+        let desc = describe_format(fmt);
+        crate::logging::info(&format!("wasapi system loopback mix format: {desc}"));
+        check_float_format(fmt, &desc)?;
         let (rate, channels) = ((*fmt).nSamplesPerSec, (*fmt).nChannels.max(1) as usize);
         wasapi_polling(
             client,
@@ -203,12 +210,71 @@ fn run_mic(sink: AudioSink, stop: Arc<AtomicBool>, device_id: &str) -> Result<()
             .Activate(windows::Win32::System::Com::CLSCTX_ALL, None)
             .map_err(err)?;
         let fmt = client.GetMixFormat().map_err(err)?;
+        let desc = describe_format(fmt);
+        crate::logging::info(&format!(
+            "wasapi mic mix format: {desc} (device={device_id})"
+        ));
+        check_float_format(fmt, &desc)?;
         let (rate, channels) = ((*fmt).nSamplesPerSec, (*fmt).nChannels.max(1) as usize);
         wasapi_polling(client, 0, MIC_ID.into(), sink, stop, fmt, rate, channels)
     }
 }
 
 use windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_LOOPBACK;
+
+/// One-line description of a WASAPI mix format for the log (tag/bits/rate/ch).
+/// `fmt` comes from `IAudioClient::GetMixFormat` (possibly WAVEFORMATEXTENSIBLE).
+/// NOTE: `WAVEFORMATEX` is a packed struct in the `windows` crate, so every
+/// field access must go through `addr_of!` + `read_unaligned` (E0793).
+unsafe fn describe_format(fmt: *const windows::Win32::Media::Audio::WAVEFORMATEX) -> String {
+    if fmt.is_null() {
+        return "null".into();
+    }
+    let tag: u16 = std::ptr::addr_of!((*fmt).wFormatTag).read_unaligned();
+    let ch: u16 = std::ptr::addr_of!((*fmt).nChannels).read_unaligned();
+    let rate: u32 = std::ptr::addr_of!((*fmt).nSamplesPerSec).read_unaligned();
+    let bits: u16 = std::ptr::addr_of!((*fmt).wBitsPerSample).read_unaligned();
+    let cb: u16 = std::ptr::addr_of!((*fmt).cbSize).read_unaligned();
+    let mut s = format!("tag={tag:#06x} ch={ch} rate={rate} bits={bits} cbSize={cb}");
+    // WAVE_FORMAT_EXTENSIBLE (0xFFFE): the float/PCM discriminator lives in
+    // the trailing SubFormat GUID (data1 3 = float, 1 = PCM).
+    if tag == 0xFFFE && cb >= 22 {
+        let base = fmt as *const u8;
+        let data1 = (base.add(24) as *const u32).read_unaligned();
+        s.push_str(&format!(" subfmt_data1={data1}"));
+    }
+    s
+}
+
+/// The polling loop below reinterprets capture buffers as f32. Shared-mode
+/// WASAPI almost always mixes float, but a driver reporting integer PCM would
+/// otherwise decode as near-zero garbage with no error. Fail loudly instead.
+unsafe fn check_float_format(
+    fmt: *const windows::Win32::Media::Audio::WAVEFORMATEX,
+    desc: &str,
+) -> Result<()> {
+    if fmt.is_null() {
+        return Err(err("WASAPI mix format is null"));
+    }
+    let tag: u16 = std::ptr::addr_of!((*fmt).wFormatTag).read_unaligned();
+    let bits: u16 = std::ptr::addr_of!((*fmt).wBitsPerSample).read_unaligned();
+    let cb: u16 = std::ptr::addr_of!((*fmt).cbSize).read_unaligned();
+    const IEEE_FLOAT: u16 = 3;
+    const EXTENSIBLE: u16 = 0xFFFE;
+    if tag == IEEE_FLOAT && bits == 32 {
+        return Ok(());
+    }
+    if tag == EXTENSIBLE && bits == 32 && cb >= 22 {
+        let base = fmt as *const u8;
+        let data1 = (base.add(24) as *const u32).read_unaligned();
+        if data1 == 3 {
+            return Ok(());
+        }
+    }
+    Err(err(format!(
+        "unsupported WASAPI mix format ({desc}): expected 32-bit float"
+    )))
+}
 
 /// Shared-mode WASAPI capture (polling). System loopback passes
 /// AUDCLNT_STREAMFLAGS_LOOPBACK, mic passes 0. `fmt` is the format passed to
@@ -239,16 +305,47 @@ unsafe fn wasapi_polling(
             fmt,
             None,
         )
-        .map_err(err)?;
-    let capture: IAudioCaptureClient = client.GetService().map_err(err)?;
-    client.Start().map_err(err)?;
+        .map_err(|e| err(format!("wasapi {id}: Initialize failed: {e}")))?;
+    let capture: IAudioCaptureClient = client
+        .GetService()
+        .map_err(|e| err(format!("wasapi {id}: GetService failed: {e}")))?;
+    client
+        .Start()
+        .map_err(|e| err(format!("wasapi {id}: Start failed: {e}")))?;
+    crate::logging::info(&format!(
+        "wasapi {id} started: rate={rate} channels={channels}"
+    ));
+
+    // Diagnosis counters: a thread that never sees packets (wrong endpoint,
+    // exclusive-mode holder, privacy block) and one that only sees SILENT
+    // packets (loopback with nothing playing) both surface as "VU frozen at
+    // 0", so log the split every 5s plus the first signal/silence transition.
+    let started = std::time::Instant::now();
+    let mut next_stats = started + Duration::from_secs(5);
+    let mut polls: u64 = 0;
+    let mut empty_polls: u64 = 0;
+    let mut signal_blocks: u64 = 0;
+    let mut silent_blocks: u64 = 0;
+    let mut signal_frames: u64 = 0;
+    let mut saw_signal = false;
+    let mut saw_silent = false;
 
     loop {
         if stop.load(Ordering::Relaxed) {
             let _ = client.Stop();
+            crate::logging::info(&format!(
+                "wasapi {id} stopped after {:?}: polls={polls} empty={empty_polls} signal_blocks={signal_blocks} silent_blocks={silent_blocks} signal_frames={signal_frames}",
+                started.elapsed()
+            ));
             return Ok(());
         }
-        let mut packet = capture.GetNextPacketSize().map_err(err)?;
+        let mut packet = capture
+            .GetNextPacketSize()
+            .map_err(|e| err(format!("wasapi {id}: GetNextPacketSize failed: {e}")))?;
+        polls += 1;
+        if packet == 0 {
+            empty_polls += 1;
+        }
         while packet > 0 {
             let mut ptr: *mut u8 = std::ptr::null_mut();
             let mut frames = 0u32;
@@ -277,17 +374,46 @@ unsafe fn wasapi_polling(
                         stereo.push(r);
                     }
                     let block = resample_stereo(&stereo, rate, TARGET_RATE);
+                    signal_frames += (block.len() / 2) as u64;
+                    signal_blocks += 1;
+                    if !saw_signal {
+                        saw_signal = true;
+                        crate::logging::info(&format!(
+                            "wasapi {id}: first signal block ({frames} frames)"
+                        ));
+                    }
                     if !sink.push(&id, block) {
                         let _ = client.Stop();
                         return Ok(());
                     }
-                } else if !sink.push(&id, vec![0.0; frames as usize * 2]) {
-                    let _ = client.Stop();
-                    return Ok(());
+                } else {
+                    // Silence resampled to 48k like signal so block durations
+                    // stay consistent across rates (zeros resample to zeros).
+                    let silent: Vec<f32> = vec![0.0; frames as usize * 2];
+                    let block = resample_stereo(&silent, rate, TARGET_RATE);
+                    silent_blocks += 1;
+                    if !saw_silent {
+                        saw_silent = true;
+                        crate::logging::info(&format!(
+                            "wasapi {id}: first silent block ({frames} frames)"
+                        ));
+                    }
+                    if !sink.push(&id, block) {
+                        let _ = client.Stop();
+                        return Ok(());
+                    }
                 }
             }
             let _ = capture.ReleaseBuffer(frames);
-            packet = capture.GetNextPacketSize().map_err(err)?;
+            packet = capture
+                .GetNextPacketSize()
+                .map_err(|e| err(format!("wasapi {id}: GetNextPacketSize failed: {e}")))?;
+        }
+        if std::time::Instant::now() >= next_stats {
+            crate::logging::info(&format!(
+                "wasapi {id} stats: polls={polls} empty={empty_polls} signal_blocks={signal_blocks} silent_blocks={silent_blocks} signal_frames={signal_frames}"
+            ));
+            next_stats = std::time::Instant::now() + Duration::from_secs(5);
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -301,6 +427,7 @@ unsafe fn wasapi_polling(
 )]
 struct LoopbackActivation {
     result: Arc<Mutex<Option<windows::core::IUnknown>>>,
+    hr: Arc<Mutex<windows::core::HRESULT>>,
     ready: Arc<(Mutex<bool>, std::sync::Condvar)>,
 }
 
@@ -320,6 +447,7 @@ impl windows::Win32::Media::Audio::IActivateAudioInterfaceCompletionHandler_Impl
                 let _ = op.GetActivateResult(&mut hr, &mut unk);
             }
             *self.result.lock().unwrap() = unk;
+            *self.hr.lock().unwrap() = hr;
         }
         let (lock, cvar) = &*self.ready;
         let mut done = lock.lock().unwrap();
@@ -376,9 +504,12 @@ fn run_process_loopback(pid: u32, sink: AudioSink, stop: Arc<AtomicBool>) -> Res
         };
 
         let result: Arc<Mutex<Option<windows::core::IUnknown>>> = Arc::new(Mutex::new(None));
+        let hr: Arc<Mutex<windows::core::HRESULT>> =
+            Arc::new(Mutex::new(windows::core::HRESULT::default()));
         let ready = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let handler: IActivateAudioInterfaceCompletionHandler = LoopbackActivation {
             result: result.clone(),
+            hr: hr.clone(),
             ready: ready.clone(),
         }
         .into();
@@ -389,7 +520,11 @@ fn run_process_loopback(pid: u32, sink: AudioSink, stop: Arc<AtomicBool>) -> Res
             Some(&var),
             &handler,
         )
-        .map_err(err)?;
+        .map_err(|e| {
+            err(format!(
+                "process loopback ({pid}) activation request failed: {e}"
+            ))
+        })?;
 
         // wait for activation (max 3s)
         let (lock, cvar) = &*ready;
@@ -397,14 +532,23 @@ fn run_process_loopback(pid: u32, sink: AudioSink, stop: Arc<AtomicBool>) -> Res
         let (_guard, _timeout) = cvar
             .wait_timeout_while(guard, Duration::from_secs(3), |done| !*done)
             .map_err(err)?;
-        let unk = result
-            .lock()
-            .map_err(err)?
-            .take()
-            .ok_or_else(|| err("process loopback activation timed out"))?;
+        let activate_hr = *hr.lock().map_err(err)?;
+        if activate_hr.is_err() {
+            return Err(err(format!(
+                "process loopback ({pid}) activation failed: HRESULT 0x{:08X}",
+                activate_hr.0 as u32
+            )));
+        }
+        let unk = result.lock().map_err(err)?.take().ok_or_else(|| {
+            err(format!(
+                "process loopback ({pid}) activation timed out (HRESULT 0x{:08X})",
+                activate_hr.0 as u32
+            ))
+        })?;
+        crate::logging::info(&format!("wasapi pid:{pid} process loopback activated"));
 
-        let client: IAudioClient =
-            <IUnknown as windows::core::ComInterface>::cast(&unk).map_err(err)?;
+        let client: IAudioClient = <IUnknown as windows::core::ComInterface>::cast(&unk)
+            .map_err(|e| err(format!("process loopback ({pid}) cast failed: {e}")))?;
 
         // float32 48kHz stereo
         let format = windows::Win32::Media::Audio::WAVEFORMATEX {
