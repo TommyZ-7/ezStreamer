@@ -124,7 +124,7 @@ impl Default for ProfilesConfig {
         Self {
             version: SCHEMA_VERSION,
             locale: default_locale(),
-            ingest_url: "rtmp://topaz.chat/live".into(),
+            ingest_url: "rtmp://live.meta-note-ex.com/live".into(),
             active_profile: "mid".into(),
             profiles: default_profiles(),
             last_stream_key: String::new(),

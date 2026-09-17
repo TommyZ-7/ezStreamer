@@ -360,7 +360,7 @@ mod tests {
         state.apply_config(ProfilesConfig::default());
         state.stream_key = "abc123".into();
         let (pc, quest) = state.playback_urls();
-        assert_eq!(pc, "rtspt://topaz.chat/live/abc123");
-        assert_eq!(quest, "rtsp://topaz.chat/live/abc123");
+        assert_eq!(pc, "rtspt://live.meta-note-ex.com/live/abc123");
+        assert_eq!(quest, "rtsp://live.meta-note-ex.com/live/abc123");
     }
 }
