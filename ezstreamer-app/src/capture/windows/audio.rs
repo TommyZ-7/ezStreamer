@@ -36,9 +36,25 @@ pub fn start_audio(
     } else {
         Vec::new()
     };
+    // PIDs go stale: `selected_apps` persists across restarts while process
+    // ids change on every launch (0x80070002 at activation). Drop dead PIDs
+    // loudly instead of capturing silence or erroring per-thread.
+    let mut live_apps: Vec<u32> = Vec::with_capacity(valid_apps.len());
+    for pid in valid_apps {
+        if pid_alive(pid) {
+            live_apps.push(pid);
+        } else {
+            let msg = format!("audio app (pid:{pid}) is no longer running; reselect it");
+            crate::logging::error(&msg);
+            if let Some(ui) = ui.as_ref() {
+                ui.error("audio", &msg);
+            }
+        }
+    }
+    let valid_apps = live_apps;
     if selection.mode != "system" && !selection.mic.enabled && valid_apps.is_empty() {
         return Err(super::CaptureError::Failed(
-            "no audio source selected".into(),
+            "no audio source selected (selected apps are no longer running?)".into(),
         ));
     }
     crate::logging::info(&format!(
@@ -105,6 +121,22 @@ pub fn start_audio(
     }
 
     Ok(cap)
+}
+
+/// True when a process with this PID currently exists. Used to drop stale
+/// app selections (persisted PIDs from previous launches) before attempting
+/// process-loopback activation, which would otherwise fail with 0x80070002.
+fn pid_alive(pid: u32) -> bool {
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => {
+                let _ = windows::Win32::Foundation::CloseHandle(h);
+                true
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 /// True when `device_id` is "default"/empty or an active capture endpoint.

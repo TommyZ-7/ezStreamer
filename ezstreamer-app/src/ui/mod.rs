@@ -56,7 +56,15 @@ impl EzStreamerApp {
                 }
                 UiEvent::Displays(displays) => self.state.displays = displays,
                 UiEvent::Windows(windows) => self.state.windows = windows,
-                UiEvent::AudioDevices(devices) => self.state.devices = Some(*devices),
+                UiEvent::AudioDevices(devices) => {
+                    let pruned = self.state.prune_selected_apps(&devices.apps);
+                    if pruned > 0 {
+                        crate::logging::info(&format!(
+                            "audio: dropped {pruned} stale app selection(s)"
+                        ));
+                    }
+                    self.state.devices = Some(*devices);
+                }
                 UiEvent::Encoders(encoders) => self.state.encoders = encoders,
                 UiEvent::Preview { rgba, w, h } => {
                     let image =

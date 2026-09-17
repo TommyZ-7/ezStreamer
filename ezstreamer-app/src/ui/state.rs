@@ -5,8 +5,8 @@
 use crate::ui::i18n::Locale;
 use ezstreamer_core::config::{self, LastSources, MicSource, ProfilesConfig, ScreenTarget};
 use ezstreamer_core::ipc_types::{
-    AudioDevices, AudioSelection, Display, EncoderInfo, SourceGain, StreamConfig, StreamStatus,
-    WindowInfo,
+    AppAudio, AudioDevices, AudioSelection, Display, EncoderInfo, SourceGain, StreamConfig,
+    StreamStatus, WindowInfo,
 };
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -289,6 +289,25 @@ impl UiState {
         }
         self.mark_persist();
     }
+
+    /// Drop selected apps that no longer exist in a fresh enumeration.
+    /// App ids embed PIDs (`pid:<n>`), which change on every launch — a
+    /// persisted selection otherwise points at dead processes forever
+    /// (process loopback then fails with 0x80070002). Returns removals.
+    pub fn prune_selected_apps(&mut self, apps: &[AppAudio]) -> usize {
+        let before = self.selected_apps.len();
+        self.selected_apps
+            .retain(|id| apps.iter().any(|a| &a.id == id));
+        // app_mix gains keyed by dead ids are harmless (mixer ignores them)
+        // but unbounded across reinstalls; drop them too.
+        self.app_mix
+            .retain(|id, _| self.selected_apps.iter().any(|s| s == id));
+        let removed = before - self.selected_apps.len();
+        if removed > 0 {
+            self.mark_persist();
+        }
+        removed
+    }
 }
 
 #[cfg(test)]
@@ -362,5 +381,29 @@ mod tests {
         let (pc, quest) = state.playback_urls();
         assert_eq!(pc, "rtspt://live.meta-note-ex.com/live/abc123");
         assert_eq!(quest, "rtsp://live.meta-note-ex.com/live/abc123");
+    }
+
+    #[test]
+    fn prune_drops_stale_app_selections() {
+        let mut state = UiState::new(Locale::En);
+        state.apply_config(ProfilesConfig::default());
+        state.selected_apps = vec!["pid:111".into(), "pid:222".into()];
+        state.app_mix.insert(
+            "pid:111".into(),
+            AppMixEntry {
+                gain: 1.5,
+                muted: false,
+            },
+        );
+        let live = vec![AppAudio {
+            id: "pid:222".into(),
+            label: "app".into(),
+        }];
+        assert_eq!(state.prune_selected_apps(&live), 1);
+        assert_eq!(state.selected_apps, vec!["pid:222".to_string()]);
+        assert!(!state.app_mix.contains_key("pid:111"));
+        assert!(state.persist_due.is_some());
+        // second prune is a no-op (no persist re-armed here, just no removal)
+        assert_eq!(state.prune_selected_apps(&live), 0);
     }
 }
