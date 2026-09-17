@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
+// WASAPI capture threads log concurrently; without this, two threads opening
+// the same file interleave mid-line into unreadable mush (seen in the wild).
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn log_dir() -> PathBuf {
     ezstreamer_core::config::config_dir().join("logs")
 }
@@ -34,6 +38,7 @@ fn rotate_if_needed(path: &Path) {
 }
 
 fn append(dir: &Path, level: &str, msg: &str) {
+    let _guard = WRITE_LOCK.lock();
     if fs::create_dir_all(dir).is_err() {
         return;
     }
