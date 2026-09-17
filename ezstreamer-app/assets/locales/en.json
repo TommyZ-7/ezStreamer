@@ -70,7 +70,7 @@
   "stream": {
     "title": "Stream",
     "ingest": "Ingest URL",
-    "ingestHint": "Default: rtmp://topaz.chat/live (change in Settings)",
+    "ingestHint": "Default: rtmp://live.meta-note-ex.com/live (change in Settings)",
     "key": "Stream key",
     "keyInvalid": "Key must be 3-64 alphanumeric/hyphen/underscore characters",
     "keyGeneric": "Generic keys risk colliding with other streams",

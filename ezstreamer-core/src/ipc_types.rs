@@ -30,7 +30,7 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
     fn default() -> Self {
         Self {
-            ingest_url: "rtmp://topaz.chat/live".into(),
+            ingest_url: "rtmp://live.meta-note-ex.com/live".into(),
             stream_key: String::new(),
             screen: ScreenTarget::default(),
             audio: AudioSelection::default(),
