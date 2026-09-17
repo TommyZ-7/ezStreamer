@@ -393,7 +393,13 @@ unsafe fn wasapi_polling(
                     }
                     if !sink.push(&id, block) {
                         let _ = client.Stop();
-                        return Ok(());
+                        // A dead mixer used to exit here silently (Ok), hiding
+                        // the real breakage downstream. Normal shutdown sets
+                        // `stop` first, so only unexpected loss is loud.
+                        if stop.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+                        return Err(err(format!("wasapi {id}: audio sink gone (mixer stopped)")));
                     }
                 } else {
                     // Silence resampled to 48k like signal so block durations
@@ -409,7 +415,10 @@ unsafe fn wasapi_polling(
                     }
                     if !sink.push(&id, block) {
                         let _ = client.Stop();
-                        return Ok(());
+                        if stop.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+                        return Err(err(format!("wasapi {id}: audio sink gone (mixer stopped)")));
                     }
                 }
             }

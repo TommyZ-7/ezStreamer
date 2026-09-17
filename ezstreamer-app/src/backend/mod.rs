@@ -103,6 +103,8 @@ struct SessionState {
     preview: Mutex<Option<PreviewCapture>>,
     screen: Mutex<Option<ScreenHandle>>,
     audio_cap: Mutex<Option<AudioCapture>>,
+    /// Throttle for the periodic audio-pump log in [`tick`] (5s).
+    audio_log_at: Mutex<std::time::Instant>,
 }
 
 /// Preview capture + its exclusive frame pump. The pump must outlive the
@@ -131,6 +133,7 @@ impl SessionState {
             preview: Mutex::new(None),
             screen: Mutex::new(None),
             audio_cap: Mutex::new(None),
+            audio_log_at: Mutex::new(std::time::Instant::now()),
         }
     }
 }
@@ -708,14 +711,39 @@ fn spawn_retry_thread(
 fn tick(state: &Arc<SessionState>, shared: &Arc<Mutex<Shared>>, sink: &UiSink) {
     // F-ST-03: VU levels (50ms cadence is produced by the audio sink; polling
     // at the worker tick is enough for the meters).
-    let vu = state
+    let audio_pump: Option<(ezstreamer_core::audio::SinkStats, VuMeter)> = state
         .audio_cap
         .lock()
         .unwrap()
         .as_ref()
         .and_then(|cap| cap.sink.as_ref())
-        .map(|sink| sink.last_vu.lock().unwrap().clone())
+        .map(|sink| {
+            (
+                *sink.stats.lock().unwrap(),
+                sink.last_vu.lock().unwrap().clone(),
+            )
+        });
+    let vu = audio_pump
+        .as_ref()
+        .map(|(_, vu)| vu.clone())
         .unwrap_or_default();
+    // Which stage drops the audio (capture push / mixer emit / gst feeder)?
+    // Throttled: the counters above answer it without spamming the log.
+    if let Some((stats, _)) = &audio_pump {
+        let mut at = state.audio_log_at.lock().unwrap();
+        if at.elapsed() >= Duration::from_secs(5) {
+            *at = std::time::Instant::now();
+            logging::info(&format!(
+                "audio pump: received={} emitted={} silent={} last_peak={:.6} peak_max={:.6} master_peak={:.6}",
+                stats.received,
+                stats.emitted,
+                stats.silent_emits,
+                stats.last_peak,
+                stats.peak_max,
+                vu.master.peak,
+            ));
+        }
+    }
 
     let retrying = *state.retrying.lock().unwrap();
     let mut status = StreamStatus {

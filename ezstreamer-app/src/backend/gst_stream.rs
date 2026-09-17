@@ -306,23 +306,29 @@ pub fn spawn_pipeline(
         .name("gst-video-feed".into())
         .spawn(move || {
             wait_for_playing(&pipeline_v, &stop_v);
-            while !stop_v.load(Ordering::Relaxed) {
+            let mut pushed: u64 = 0;
+            let exit: &str = loop {
+                if stop_v.load(Ordering::Relaxed) {
+                    break "stop";
+                }
                 match video_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(frame) => {
                         let buf = gst::Buffer::from_slice(frame);
                         if v_appsrc.push_buffer(buf).is_ok() {
                             vf.fetch_add(1, Ordering::Relaxed);
+                            pushed += 1;
                         } else {
                             crate::logging::error(
                                 "video feeder: appsrc push failed (pipeline flushing)",
                             );
-                            break; // pipeline flushing
+                            break "push-failed"; // pipeline flushing
                         }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break "disconnected",
                 }
-            }
+            };
+            crate::logging::info(&format!("video feeder exit: {exit} pushed={pushed}"));
             let _ = v_appsrc.end_of_stream();
         })
         .map_err(|e| {
@@ -338,22 +344,28 @@ pub fn spawn_pipeline(
         .name("gst-audio-feed".into())
         .spawn(move || {
             wait_for_playing(&pipeline_a, &stop_a);
-            while !stop_a.load(Ordering::Relaxed) {
+            let mut pushed: u64 = 0;
+            let exit: &str = loop {
+                if stop_a.load(Ordering::Relaxed) {
+                    break "stop";
+                }
                 match audio_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(block) => {
                         let bytes: Vec<u8> = block.iter().flat_map(|s| s.to_le_bytes()).collect();
                         if a_appsrc.push_buffer(gst::Buffer::from_slice(bytes)).is_ok() {
+                            pushed += 1;
                         } else {
                             crate::logging::error(
                                 "audio feeder: appsrc push failed (pipeline flushing)",
                             );
-                            break;
+                            break "push-failed";
                         }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break "disconnected",
                 }
-            }
+            };
+            crate::logging::info(&format!("audio feeder exit: {exit} pushed={pushed}"));
             let _ = a_appsrc.end_of_stream();
         })
         .map_err(|e| {
