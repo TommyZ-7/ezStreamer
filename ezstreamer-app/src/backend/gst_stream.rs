@@ -299,9 +299,16 @@ pub fn spawn_pipeline(
     // `do-timestamp` stamps buffers with the pipeline running time only once
     // the clock is distributed, so pre-PLAYING pushes would reach the muxer
     // without a timestamp. Both streams then share one timebase.
+    //
+    // Watchdog: a feeder that dies unexpectedly (push-failed/disconnected)
+    // sets `leg_error`; the bus thread below fails the run loudly so F-ST-04
+    // retries instead of streaming half-dead forever (e.g. video-only with a
+    // starved audio leg and no bus ERROR).
+    let leg_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let vf = video_frames.clone();
     let stop_v = stop.clone();
     let pipeline_v = pipeline.clone();
+    let leg_v = leg_error.clone();
     std::thread::Builder::new()
         .name("gst-video-feed".into())
         .spawn(move || {
@@ -329,6 +336,10 @@ pub fn spawn_pipeline(
                 }
             };
             crate::logging::info(&format!("video feeder exit: {exit} pushed={pushed}"));
+            if exit != "stop" {
+                *leg_v.lock().unwrap() =
+                    Some(format!("video feeder died ({exit} after {pushed} pushes)"));
+            }
             let _ = v_appsrc.end_of_stream();
         })
         .map_err(|e| {
@@ -340,6 +351,7 @@ pub fn spawn_pipeline(
 
     let stop_a = stop.clone();
     let pipeline_a = pipeline.clone();
+    let leg_a = leg_error.clone();
     std::thread::Builder::new()
         .name("gst-audio-feed".into())
         .spawn(move || {
@@ -366,6 +378,10 @@ pub fn spawn_pipeline(
                 }
             };
             crate::logging::info(&format!("audio feeder exit: {exit} pushed={pushed}"));
+            if exit != "stop" {
+                *leg_a.lock().unwrap() =
+                    Some(format!("audio feeder died ({exit} after {pushed} pushes)"));
+            }
             let _ = a_appsrc.end_of_stream();
         })
         .map_err(|e| {
@@ -380,6 +396,7 @@ pub fn spawn_pipeline(
     let bus = pipeline.bus().ok_or("pipeline has no bus")?;
     let done_t = done.clone();
     let stop_t = stop.clone();
+    let leg_bus = leg_error.clone();
     let handle = std::thread::Builder::new()
         .name("gst-bus".into())
         .spawn(move || {
@@ -401,6 +418,20 @@ pub fn spawn_pipeline(
                             break;
                         }
                         Some(_) => {}
+                    }
+                }
+                // Watchdog: a dead feeder leg fails the run (F-ST-04 retries)
+                // instead of streaming half-dead with no bus ERROR. The stop
+                // path above wins on user stop (clean EOS), so a feeder death
+                // racing a user stop still shuts down cleanly.
+                if !stop_t.load(Ordering::Relaxed) {
+                    let leg_fail = leg_bus.lock().map(|mut g| g.take()).unwrap_or(None);
+                    if let Some(msg) = leg_fail {
+                        let msg = format!("gst leg failure: {msg}");
+                        crate::logging::error(&msg);
+                        eprintln!("{msg}");
+                        ok = false;
+                        break;
                     }
                 }
                 match bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
