@@ -8,7 +8,7 @@ use crate::backend::Shared;
 use crate::ui::i18n::I18n;
 use crate::ui::state::{AppMixEntry, AudioMode, UiState};
 use crate::ui::theme::*;
-use crate::ui::widgets::{checkbox, section_header, small_hint, vu_bar};
+use crate::ui::widgets::{checkbox, format_vu_db, section_header, small_hint, vu_bar};
 use egui::{RichText, Sense, Ui};
 use ezstreamer_core::config::MicSource;
 use std::sync::{Arc, Mutex};
@@ -26,7 +26,7 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.label(
-                    RichText::new(format!("{:.2}", vu.master.rms))
+                    RichText::new(format_vu_db(vu.master.rms))
                         .monospace()
                         .size(11.0)
                         .color(FAINT),
