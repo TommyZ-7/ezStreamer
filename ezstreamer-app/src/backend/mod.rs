@@ -509,10 +509,16 @@ fn cmd_start_stream(
 
 fn cmd_stop_stream(state: &Arc<SessionState>, sink: &UiSink, shared: &Arc<Mutex<Shared>>) {
     *state.retrying.lock().unwrap() = None; // cancels a pending F-ST-04 retry
+
+    // Teardown order is load-bearing: sources first, pipeline last. Stopping
+    // the pipeline first kills the feeders, which kills the mixer, and the
+    // still-running capture threads then fail their pushes loudly ("audio
+    // sink gone") on every normal stop. Stopping capture first lets each
+    // stage exit quietly on its own stop flag.
+    stop_capture_backends(state);
     if let Some(mut p) = state.stream.lock().unwrap().take() {
         p.stop();
     }
-    stop_capture_backends(state);
     *state.active_mixer.lock().unwrap() = None;
     *state.session.lock().unwrap() = None;
     stop_preview_impl(state);
@@ -981,10 +987,12 @@ fn open_dir(path: &PathBuf, sink: &UiSink) {
 /// Design §9: release capture/stream resources on app exit so the RTMP
 /// connection and capture backends are torn down deterministically.
 fn shutdown(state: &Arc<SessionState>) {
+    // Same teardown order as `cmd_stop_stream`: sources first, pipeline
+    // last, so capture threads never outlive the mixer they push into.
+    stop_capture_backends(state);
     if let Some(mut p) = state.stream.lock().unwrap().take() {
         p.stop();
     }
-    stop_capture_backends(state);
     stop_preview_impl(state);
     *state.session.lock().unwrap() = None;
     logging::info("app exit: capture/pipeline stopped");
