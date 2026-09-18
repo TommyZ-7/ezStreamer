@@ -273,7 +273,31 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>
     response
 }
 
+/// VU meter floor in dB. Linear RMS around 0.05-0.2 sounds loud but only
+/// lights 5-20% of a linear 0.0-1.0 bar, so map -60dB..0dB to 0..1
+/// (same convention as OBS: green to -18dB, amber to -6dB, red above).
+pub const VU_FLOOR_DB: f32 = -60.0;
+
+/// Linear amplitude (RMS/peak, nominal 0.0-1.0) → meter 0.0-1.0 with a dB
+/// scale. Silence/non-finite → 0, >= 0dB → 1.
+pub fn vu_to_meter(level: f32) -> f32 {
+    if !level.is_finite() || level <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * level.log10();
+    ((db - VU_FLOOR_DB) / -VU_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// Linear amplitude → human-readable dB label (`-inf dB` for silence).
+pub fn format_vu_db(level: f32) -> String {
+    if !level.is_finite() || level <= 0.0 {
+        return "-inf dB".to_string();
+    }
+    format!("{:.1} dB", 20.0 * level.log10())
+}
+
 /// Segmented VU meter: discrete blocks, hard color steps (no gradient).
+/// `level` is linear amplitude; it is dB-mapped via [`vu_to_meter`].
 pub fn vu_bar(ui: &mut Ui, width: f32, height: f32, level: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let painter = ui.painter();
@@ -281,7 +305,7 @@ pub fn vu_bar(ui: &mut Ui, width: f32, height: f32, level: f32) {
     let segments = ((rect.width() / 5.0) as usize).clamp(8, 40);
     let gap = 1.0;
     let seg_w = (rect.width() - gap * (segments.saturating_sub(1)) as f32) / segments as f32;
-    let lit = (level.clamp(0.0, 1.0) * segments as f32).round() as usize;
+    let lit = (vu_to_meter(level) * segments as f32).round() as usize;
     for i in 0..segments {
         let x = rect.left() + i as f32 * (seg_w + gap);
         let seg = Rect::from_min_size(
@@ -345,4 +369,43 @@ pub fn copy_row(ui: &mut Ui, label_text: &str, url: &str, copy_label: &str) -> b
         }
     });
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vu_meter_maps_silence_and_full_scale() {
+        assert_eq!(vu_to_meter(0.0), 0.0);
+        assert_eq!(vu_to_meter(-0.5), 0.0);
+        assert_eq!(vu_to_meter(f32::NAN), 0.0);
+        assert_eq!(vu_to_meter(f32::INFINITY), 0.0);
+        assert_eq!(vu_to_meter(1.0), 1.0);
+        assert_eq!(vu_to_meter(2.0), 1.0); // hot mix clamps to full
+    }
+
+    #[test]
+    fn vu_meter_expands_quiet_levels() {
+        // -20dB (0.1, normal speech/music RMS) must light ~2/3 of the bar,
+        // not 10% as with the old linear mapping.
+        let normal = vu_to_meter(0.1);
+        assert!((normal - 2.0 / 3.0).abs() < 1e-6, "0.1 → {normal}");
+        assert!(normal > 0.5, "normal volume must move the bar well");
+        let quiet = vu_to_meter(0.01); // -40dB
+        assert!((quiet - 1.0 / 3.0).abs() < 1e-6, "0.01 → {quiet}");
+        // Monotonic: louder always lights more.
+        assert!(vu_to_meter(0.01) < vu_to_meter(0.1) && vu_to_meter(0.1) < vu_to_meter(0.5));
+        // Standard thresholds still land on segment colors:
+        // 0.7 → -18dB (green/amber), 0.9 → -6dB (amber/red).
+        assert!((vu_to_meter(10f32.powf(-18.0 / 20.0)) - 0.7).abs() < 1e-6);
+        assert!((vu_to_meter(10f32.powf(-6.0 / 20.0)) - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vu_db_label() {
+        assert_eq!(format_vu_db(0.0), "-inf dB");
+        assert_eq!(format_vu_db(1.0), "0.0 dB");
+        assert_eq!(format_vu_db(0.1), "-20.0 dB");
+    }
 }
