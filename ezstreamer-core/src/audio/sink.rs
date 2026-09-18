@@ -48,7 +48,8 @@ pub struct SinkStats {
     pub silent_emits: u64,
     /// peak |sample| of the last emitted mixed block
     pub last_peak: f32,
-    /// max `last_peak` since the last [`SinkStats::take_peak_max`] reset
+    /// running max of `last_peak` since spawn (diagnosis: did live audio
+    /// ever reach the mixer output)
     pub peak_max: f32,
 }
 
@@ -135,6 +136,10 @@ impl AudioSink {
         self.tx.send((source_id.to_string(), block)).is_ok()
     }
 
+    /// Stop the pump and join the mixer thread. Explicit only: dropping a
+    /// clone must NOT stop the shared pump (regression 2026-09-18 — the
+    /// launch path moves the original into `start_audio`, whose return
+    /// dropped it and killed the pump mid-stream: silent VU, silent RTMP).
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Ok(mut slot) = self.handle.lock() {
@@ -145,11 +150,10 @@ impl AudioSink {
     }
 }
 
-impl Drop for AudioSink {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
+// NOTE: deliberately no `Drop` impl. `AudioSink` is `Clone` with a shared
+// pump; every owner stops explicitly (`AudioCapture::stop`, tests). A
+// drop-stops impl killed the pump when the launch path's original went out
+// of scope while capture threads still held clones.
 
 /// Shared mixing pump: mixes queued source blocks and forwards the
 /// interleaved stereo output via `emit`. Returning `false` stops the thread.
@@ -377,5 +381,26 @@ mod tests {
         assert!((st.last_peak - 0.25).abs() < 1e-6, "peak: {st:?}");
         assert!((st.peak_max - 0.25).abs() < 1e-6, "peak_max: {st:?}");
         sink.stop();
+    }
+
+    #[test]
+    fn dropping_original_clone_keeps_pump_alive() {
+        // Regression 2026-09-18: `launch_pipeline` moves the original into
+        // `start_audio`, whose return dropped it — and `Drop::drop` stopped
+        // the shared pump mid-stream (silent VU + silent RTMP in every mode).
+        // Dropping one clone must not affect the others; stopping is explicit.
+        let mixer = Arc::new(Mutex::new(Mixer::default()));
+        let (sink, out_rx) = AudioSink::spawn_appsrc(mixer).unwrap();
+        let worker = sink.clone();
+        drop(sink); // starter's original goes out of scope here
+        assert!(worker.push("a", vec![0.5; BLOCK]), "pump died with the original");
+        let block = out_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("no mixed block after original was dropped");
+        assert!(
+            block.iter().any(|&s| (s - 0.5).abs() < 1e-6),
+            "mixed content lost"
+        );
+        worker.stop();
     }
 }
