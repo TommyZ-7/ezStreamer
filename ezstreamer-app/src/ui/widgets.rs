@@ -296,6 +296,26 @@ pub fn format_vu_db(level: f32) -> String {
     format!("{:.1} dB", 20.0 * level.log10())
 }
 
+/// Meter ballistics: the mixer emits a fresh level every ~10ms and the UI
+/// repaints at ~20fps, so displaying the raw value makes the dB-scaled bar
+/// flicker on every transient. Rise fast, fall slowly (standard VU behavior).
+pub const METER_ATTACK_SECS: f32 = 0.01;
+pub const METER_RELEASE_SECS: f32 = 0.25;
+
+/// One smoothing step toward `target` over `dt` seconds. `dt <= 0` holds.
+pub fn smooth_meter(displayed: f32, target: f32, dt: f32) -> f32 {
+    if dt <= 0.0 || !target.is_finite() {
+        return displayed;
+    }
+    let target = target.max(0.0);
+    let tau = if target >= displayed {
+        METER_ATTACK_SECS
+    } else {
+        METER_RELEASE_SECS
+    };
+    displayed + (target - displayed) * (1.0 - (-dt / tau).exp())
+}
+
 /// Segmented VU meter: discrete blocks, hard color steps (no gradient).
 /// `level` is linear amplitude; it is dB-mapped via [`vu_to_meter`].
 pub fn vu_bar(ui: &mut Ui, width: f32, height: f32, level: f32) {
@@ -407,5 +427,33 @@ mod tests {
         assert_eq!(format_vu_db(0.0), "-inf dB");
         assert_eq!(format_vu_db(1.0), "0.0 dB");
         assert_eq!(format_vu_db(0.1), "-20.0 dB");
+    }
+
+    #[test]
+    fn meter_holds_without_time() {
+        assert_eq!(smooth_meter(0.3, 0.9, 0.0), 0.3);
+        assert_eq!(smooth_meter(0.3, 0.9, -0.1), 0.3);
+    }
+
+    #[test]
+    fn meter_rises_fast_and_falls_slow() {
+        let dt = 1.0 / 20.0; // UI repaint cadence (~20fps)
+        let up = smooth_meter(0.0, 1.0, dt);
+        let down = smooth_meter(1.0, 0.0, dt);
+        assert!(up > 0.9, "attack must track transients: {up}");
+        assert!(down > 0.8 && down < 1.0, "release must glide: {down}");
+    }
+
+    #[test]
+    fn meter_converges_and_ignores_garbage() {
+        let mut v = 0.0;
+        for _ in 0..200 {
+            v = smooth_meter(v, 0.5, 1.0 / 20.0);
+        }
+        assert!((v - 0.5).abs() < 1e-3, "must settle on target: {v}");
+        assert_eq!(smooth_meter(0.3, f32::NAN, 0.05), 0.3);
+        // Negative input clamps to silence and then releases downward.
+        let neg = smooth_meter(0.3, -1.0, 0.05);
+        assert!(neg < 0.3 && neg >= 0.0, "negative target releases: {neg}");
     }
 }

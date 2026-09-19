@@ -44,6 +44,17 @@ impl Default for AppMixEntry {
 /// Built-in profile ids, shown first in the UI.
 pub const BUILTIN_PROFILE_IDS: &[&str] = &["low", "mid", "high", "1080p"];
 
+/// Smoothed (ballistic) meter levels for display. The mixer emits a raw
+/// level every ~10ms; these hold the per-frame smoothed values so the
+/// dB-scaled bars glide instead of flickering. Transient only, never
+/// persisted.
+#[derive(Default)]
+pub struct MeterLevels {
+    pub master: f32,
+    pub apps: BTreeMap<String, f32>,
+    pub mic: f32,
+}
+
 pub struct UiState {
     pub locale: Locale,
     pub settings_open: bool,
@@ -82,6 +93,8 @@ pub struct UiState {
     pub mix_due: Option<Instant>,
     pub preview_restart_due: Option<Instant>,
     pub status: StreamStatus,
+    // transient meter smoothing (never persisted)
+    pub meters: MeterLevels,
 }
 
 impl UiState {
@@ -119,6 +132,7 @@ impl UiState {
             mix_due: None,
             preview_restart_due: None,
             status: StreamStatus::default(),
+            meters: MeterLevels::default(),
         }
     }
 

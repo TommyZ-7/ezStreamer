@@ -8,7 +8,7 @@ use crate::backend::Shared;
 use crate::ui::i18n::I18n;
 use crate::ui::state::{AppMixEntry, AudioMode, UiState};
 use crate::ui::theme::*;
-use crate::ui::widgets::{checkbox, format_vu_db, section_header, small_hint, vu_bar};
+use crate::ui::widgets::{checkbox, format_vu_db, section_header, small_hint, smooth_meter, vu_bar};
 use egui::{RichText, Sense, Ui};
 use ezstreamer_core::config::MicSource;
 use std::sync::{Arc, Mutex};
@@ -16,17 +16,23 @@ use std::sync::{Arc, Mutex};
 pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Shared>>) {
     let vu = shared.lock().unwrap().vu.clone();
     let is_live = shared.lock().unwrap().status.is_live;
+    // Frame time for meter ballistics (clamped: tab-switch gaps must not
+    // teleport the bars). Raw mixer levels update every ~10ms; the UI
+    // repaints at ~20fps, so smooth here before display.
+    let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.5);
 
     section_header(ui, &i18n.t("audio.title"), |_| {});
 
     // --- master: label + value line, VU full width below --------------------
+    let master = smooth_meter(state.meters.master, vu.master.rms, dt);
+    state.meters.master = master;
     ui.horizontal(|ui| {
         ui.label(RichText::new(i18n.t("audio.master")).size(12.5).color(DIM));
         ui.with_layout(
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.label(
-                    RichText::new(format_vu_db(vu.master.rms))
+                    RichText::new(format_vu_db(master))
                         .monospace()
                         .size(11.0)
                         .color(FAINT),
@@ -34,7 +40,7 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
             },
         );
     });
-    vu_bar(ui, ui.available_width(), 12.0, vu.master.rms);
+    vu_bar(ui, ui.available_width(), 12.0, master);
     ui.add_space(6.0);
 
     // --- mode ---------------------------------------------------------------
@@ -61,6 +67,9 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
             Some(devices) if devices.apps.is_empty() => small_hint(ui, &i18n.t("audio.noApps")),
             Some(devices) => {
                 let apps = devices.apps.clone();
+                // Drop smoothing state for apps that disappeared (device list churn).
+                let live: Vec<String> = apps.iter().map(|a| a.id.clone()).collect();
+                state.meters.apps.retain(|id, _| live.contains(id));
                 let mute_label = i18n.t("audio.mute");
                 for app in &apps {
                     let mut selected = state.selected_apps.iter().any(|a| a == &app.id);
@@ -89,13 +98,15 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
                     });
                     if selected {
                         let entry = state.app_mix_entry(&app.id);
-                        ui.add_space(2.0);
-                        vu_bar(
-                            ui,
-                            ui.available_width(),
-                            10.0,
-                            vu.apps.get(&app.id).map(|v| v.rms).unwrap_or(0.0),
+                        let raw = vu.apps.get(&app.id).map(|v| v.rms).unwrap_or(0.0);
+                        let shown = smooth_meter(
+                            state.meters.apps.get(&app.id).copied().unwrap_or(0.0),
+                            raw,
+                            dt,
                         );
+                        state.meters.apps.insert(app.id.clone(), shown);
+                        ui.add_space(2.0);
+                        vu_bar(ui, ui.available_width(), 10.0, shown);
                         gain_row(ui, i18n, entry.gain, |gain| {
                             state.set_app_mix(
                                 &app.id,
@@ -180,12 +191,13 @@ pub fn show(ui: &mut Ui, state: &mut UiState, i18n: &I18n, shared: &Arc<Mutex<Sh
     }
     if mic_snapshot.enabled {
         ui.add_space(2.0);
-        vu_bar(
-            ui,
-            ui.available_width(),
-            10.0,
+        let mic = smooth_meter(
+            state.meters.mic,
             vu.mic.as_ref().map(|m| m.rms).unwrap_or(0.0),
+            dt,
         );
+        state.meters.mic = mic;
+        vu_bar(ui, ui.available_width(), 10.0, mic);
         let mic_gain = mic_snapshot.gain;
         gain_row(ui, i18n, mic_gain, |gain| {
             state.set_mic(MicSource {
