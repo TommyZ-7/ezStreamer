@@ -54,7 +54,3 @@ cargo check -p ezstreamer --no-default-features   # UIのみ (GStreamer不要)
 - 同梱 GStreamer ランタイム: LGPL 2.1+ — `ezstreamer-app/resources/licenses/GSTREAMER-NOTICE.txt` 参照
 - 同梱フォント Noto Sans JP: SIL Open Font License 1.1 —
   `ezstreamer-app/assets/fonts/OFL.txt` / `ezstreamer-app/resources/licenses/NOTO-OFL.txt` 参照
-
-## 支援
-
-TopazChat 運営のよしたか氏: https://tyounanmoti.fanbox.cc/
